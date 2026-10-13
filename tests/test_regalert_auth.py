@@ -6,8 +6,8 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from regingest.connectors import SourceAuthError
-from regingest.connectors.regalert.auth import DEVICE_GRANT, RegAlertAuth, Token, TokenStore, device_login
+from ojk_connector.sources import SourceAuthError
+from ojk_connector.sources.regalert.auth import DEVICE_GRANT, RegAlertAuth, Token, TokenStore, device_login
 
 TOKEN_URL = "https://auth.example/oauth/token"
 
@@ -38,7 +38,7 @@ def test_refreshes_on_401_and_saves_the_new_token(tmp_path) -> None:
         ok = request.headers["Authorization"] == "Bearer new"
         return httpx.Response(200 if ok else 401, json={})
 
-    auth = RegAlertAuth(store, login_hint="regingest auth login regalert")
+    auth = RegAlertAuth(store, login_hint="ojk-connector auth login regalert")
     with httpx.Client(transport=httpx.MockTransport(handler), auth=auth) as http:
         assert http.get("https://api.example/v1/account").status_code == 200
     assert seen == ["Bearer old", "Bearer new"]
@@ -65,7 +65,7 @@ def test_failed_refresh_asks_to_log_in_again(tmp_path) -> None:
     store = TokenStore(tmp_path / "regalert.json")
     store.save(Token("old", "refresh-1", time.time() - 10, "client-1", TOKEN_URL))
     transport = httpx.MockTransport(lambda r: httpx.Response(400, json={"error": "invalid_grant"}))
-    auth = RegAlertAuth(store, login_hint="regingest auth login regalert")
+    auth = RegAlertAuth(store, login_hint="ojk-connector auth login regalert")
     with httpx.Client(transport=transport, auth=auth) as http, pytest.raises(SourceAuthError, match="auth login"):
         http.get("https://api.example/v1/account")
 

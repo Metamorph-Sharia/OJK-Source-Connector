@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from regingest.agencies.base import CanonicalId, IdResolution
-from regingest.dedup import resolve_duplicates, title_overlap
-from regingest.models import DiscoveredDocument, DocumentContent, Origin, Rights, TextArtifact
-from regingest.store import Store
+from ojk_connector.dedup import resolve_duplicates, title_overlap
+from ojk_connector.identity import CanonicalId, IdResolution
+from ojk_connector.models import DiscoveredDocument, DocumentContent, Origin, Rights, TextArtifact
+from ojk_connector.store import Store
 
 
 @pytest.mark.parametrize(
@@ -31,7 +31,7 @@ def test_title_overlap(a: str, b: str, same: bool) -> None:
 
 
 def _add(store: Store, sid: str, title: str, cid: str, text: str | None = None) -> DiscoveredDocument:
-    doc = DiscoveredDocument("regalert", sid, "ojk", title, "2024-01-01", None, None, {})
+    doc = DiscoveredDocument("regalert", sid, title, "2024-01-01", None, None, {})
     store.upsert_discovered(doc, IdResolution(CanonicalId.parse(cid), "high", "test"))
     if text is not None:
         content = DocumentContent([TextArtifact("id", Origin.SOURCE_TEXT, Rights.PUBLIC, text)], [])

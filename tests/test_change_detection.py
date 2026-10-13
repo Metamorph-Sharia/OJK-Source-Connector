@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from fake_regalert import FakeRegAlert
 from test_pipeline import make_pipeline, row
 
-from fake_regalert import FakeRegAlert
-from regingest.store import Store
+from ojk_connector.store import Store
 
 POJK_1 = "PERATURAN OTORITAS JASA KEUANGAN\nREPUBLIK INDONESIA\nNOMOR 1 TAHUN 2026\nTENTANG\nPENGGUNAAN TENAGA KERJA ASING"
 POJK_37 = "PERATURAN OTORITAS JASA KEUANGAN\nNOMOR 37 /POJK.03/2017\nTENTANG\nPEMANFAATAN TENAGA KERJA ASING"
@@ -117,7 +117,7 @@ def test_full_discovery_happens_every_n_days(tmp_path) -> None:
 
 
 def test_store_migrates_a_version_1_database(tmp_path) -> None:
-    db_path = tmp_path / "db" / "regingest.sqlite"
+    db_path = tmp_path / "db" / "ojk_connector.sqlite"
     db_path.parent.mkdir(parents=True)
     old = sqlite3.connect(db_path)
     old.executescript(

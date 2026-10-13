@@ -4,6 +4,8 @@
 
 Build a reliable, maintainable, automated ingestion pipeline that **discovers, downloads, extracts, normalizes, and monitors** regulatory documents published by OJK (Otoritas Jasa Keuangan).
 
+This repository covers **OJK only**. Each other regulator gets its own connector repository, built by another team member. All of them implement the same [connector interface](../../contract/CONNECTOR_INTERFACE.md), so the orchestrator in the next phase (probably Airflow) can run them alike.
+
 This pipeline is the data acquisition foundation for a later AI-powered market-entry and compliance platform. That platform will serve international businesses entering Indonesia's sharia multifinance and consumer lending markets.
 
 **The priority for this phase is collecting data reliably and automatically. Deciding which regulations matter to a particular business comes later.**
@@ -32,7 +34,7 @@ Sector tags that come *from the source* (e.g. JDIH OJK's `sektor`) are kept as m
 
 ## Approach in one paragraph
 
-No public source provides OJK regulations as fully extracted, normalized data (see [01-sources.md](01-sources.md)). We therefore combine two sources. **BPK Database Peraturan** supplies POJK metadata and the links between regulations. **JDIH OJK** is the authoritative source for completeness and for SEOJK/PADK. We download the PDFs and extract text ourselves, merge records under one canonical ID, and run everything on a schedule with a health report after each run.
+**RegAlert** is the primary source today. Its API supplies OJK's documents with their Indonesian text and the links between them, and it holds the full backfill: 977 documents (see [01-sources.md](01-sources.md) and the [feasibility study](../research/regalert-feasibility.md)). The fallback is **OJK's own official files on ojk.go.id**, which we download and extract ourselves (M3). They cover what RegAlert lacks, such as the 34 documents whose RegAlert text is a web page or an annex rather than the regulation. BPK and JDIH OJK follow for completeness checks. Every source plugs in behind one internal port. Records from different sources are merged under one canonical ID, and every run ends with a health report.
 
 ## Plan documents
 
@@ -42,6 +44,7 @@ No public source provides OJK regulations as fully extracted, normalized data (s
 | [02-architecture.md](02-architecture.md) | Pipeline stages, data model, storage, tech choices |
 | [03-roadmap.md](03-roadmap.md) | Milestones, tasks, acceptance criteria |
 | [04-risks-and-open-questions.md](04-risks-and-open-questions.md) | Risks, mitigations, decisions still needed |
+| [05-connector-contract.md](05-connector-contract.md) | How this repo implements the team's connector interface |
 
 ## Definition of done for this phase
 
@@ -51,3 +54,4 @@ No public source provides OJK regulations as fully extracted, normalized data (s
 4. Each run produces a machine-readable health report. When a source breaks (e.g. it starts returning zero records, or the parse rate drops), the run fails loudly rather than quietly ingesting nothing.
 5. Rerunning the pipeline is idempotent: unchanged documents are not downloaded again or duplicated.
 6. `data/corpus/` holds, for every regulation, its official PDF, its Indonesian text and its metadata. It can be read with no network access, and only contains content we are allowed to use.
+7. `OJKConnector` implements the team's connector interface, so the orchestrator can run it like every other connector.

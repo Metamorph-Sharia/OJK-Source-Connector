@@ -1,32 +1,34 @@
-# OJK Source Connector (`regingest`)
+# OJK Source Connector (`ojk-connector`)
 
-An automated, modular pipeline that **discovers, fetches, normalizes, stores and monitors** regulatory documents. OJK (Otoritas Jasa Keuangan, Indonesia's Financial Services Authority) is the first agency; other agencies plug in through config.
+Discovers, fetches, normalizes, stores and monitors the regulations of **OJK** (Otoritas Jasa Keuangan, Indonesia's Financial Services Authority).
 
-It is the data acquisition foundation for a later AI-powered market-entry and compliance platform for international businesses entering Indonesia's sharia multifinance and consumer lending markets. Every document is **stored locally** as a self-contained corpus that a later phase will turn into a knowledge database.
+This repository covers **OJK only**. Each other regulator has its own connector repository. Every connector implements the same [team interface](contract/CONNECTOR_INTERFACE.md), so the orchestrator in the next phase (probably Airflow) runs them all the same way.
 
-> **Status:** the multi-agency core, the RegAlert connector, deduplication, change detection and monitoring are built and tested. The OJK backfill is under way (977 documents discovered). See the [roadmap](docs/plan/03-roadmap.md).
+It is the data foundation for a later AI-powered market-entry and compliance platform for businesses entering Indonesia's sharia multifinance and consumer lending markets. Every document is **stored locally** as a self-contained corpus that a later phase will turn into a knowledge database.
+
+> **Status:** RegAlert backfill complete: 977 OJK documents, 973 read and 4 duplicates. Deduplication, change detection, monitoring and the team-interface adapter are built and tested. Next is the official-source fallback (M3). See the [roadmap](docs/plan/03-roadmap.md).
 
 ## Scope of this phase
 
-The priority is **collecting data reliably and automatically.** We collect regulations broadly and do **not** filter them by business relevance.
+The priority is **collecting data reliably and automatically.** We collect OJK regulations broadly and do **not** filter them by business relevance.
 
 **Out of scope for now:** relevance classification (rule-based or AI), legal interpretation or compliance advice, extracting obligations, Q&A or RAG, user-facing apps, and dashboards beyond what's needed to show that ingestion is reliable.
 
 ## Quick start
 
 ```bash
-uv sync                                   # Python ≥ 3.11; installs httpx (+ pytest for dev)
-uv run pytest                             # run the tests
+uv sync                                        # Python ≥ 3.11; installs httpx (+ pytest for dev)
+uv run pytest                                  # run the tests
 
-uv run regingest auth login regalert      # one-time browser sign-in (use --method device on a server)
-uv run regingest run                      # the scheduled job (daily)
-uv run regingest health                   # for an external scheduler: exit 0 ok / 1 warning / 2 critical
-uv run regingest review                   # records that need a person's attention
-uv run regingest events --since 2026-10-01   # what changed: new, changed, missing, amended, duplicates
+uv run ojk-connector auth login regalert       # one-time browser sign-in (use --method device on a server)
+uv run ojk-connector run                       # the whole pipeline, standalone (daily)
+uv run ojk-connector health                    # for a scheduler: exit 0 ok / 1 warning / 2 critical
+uv run ojk-connector review                    # records that need a person's attention
+uv run ojk-connector events --since 2026-10-01 # what changed: new, changed, missing, amended, duplicates
 ```
 
 What each command does:
-- **`auth login`** stores a refreshable token in `~/.config/regingest/credentials/`, outside the repository.
+- **`auth login`** stores a refreshable token in `~/.config/ojk-connector/credentials/`, outside the repository.
 - **`run`** goes through every stage:
   1. Discovers documents: incrementally, plus a full re-list every 7 days to catch removals and format drift.
   2. Reads up to 25 documents, one at a time, newest first.
@@ -36,40 +38,51 @@ What each command does:
   6. Evaluates the alert rules and writes `data/reports/latest.md`.
 
   Exit code `2` means an error or critical alert.
-- **Fair use:** RegAlert rations full-text reads. The pipeline stops cleanly when RegAlert pauses it and carries on the next day, so a daily schedule clears the backlog and then keeps up with the 1–2 new OJK documents a week.
-- **Alerts** go to `data/alerts.jsonl`, plus any channels configured under `[monitoring]` in [config/pipeline.toml](config/pipeline.toml) (Slack, webhook, email). An alert that stays open isn't repeated except as a daily reminder, and a notification is sent when it resolves.
+- **Fair use:** RegAlert rations full-text reads. The pipeline stops cleanly when RegAlert pauses it and carries on in a later run.
+- **Alerts** go to `data/alerts.jsonl`, plus any channels configured under `[monitoring]` in [config/pipeline.toml](config/pipeline.toml) (Slack, webhook, email).
 
 Other commands:
 - `discover`, `fetch`, `check-status`, `dedupe` and `export`: run one stage on its own.
 - `reparse`: re-applies identity and text rules to stored data, with no network calls.
-- `status`: counts by agency, source, status, identity and rights.
+- `status`: counts by source, status, identity and rights.
 - `rights`: relabels stored texts after a licence decision.
+
+## For the orchestrator
+
+The orchestrator imports one class, which implements the [team interface](contract/CONNECTOR_INTERFACE.md):
+
+```python
+from ojk_connector import OJKConnector
+
+connector = OJKConnector({"config": "config/pipeline.toml"})
+discovery = connector.discover(cursor=None)              # every OJK document; returns a cursor for next time
+fetched = connector.fetch(discovery.items[0], store)     # raw payloads + texts saved through store.put()
+```
+
+`max_concurrency = 1`, because RegAlert's reads are rationed. Errors arrive as the interface's `SourceUnavailable` (quota or outage), `AuthFailed` or `ItemFailed`.
 
 ## How it fits together
 
 ```
-config/pipeline.toml
-  [sources.*]   → Connector       where documents come from   (regalert; later bpk, jdih_ojk)
-  [agencies.*]  → AgencyProfile   what they are + canonical ids (ojk; "generic" for new agencies)
-
-discover ─► fetch content (paced) ─► check standing ─► dedupe ─► export ─► data/corpus/
-   │ change detection    │ text quality      │ amended/replaced            └─► alerts ─► channels
-   └──────────────── events + store (SQLite + raw blobs) ───────────────────► reports, health
+Airflow (later) ──► OJKConnector ──┐                 the team interface
+ojk-connector CLI ─► Pipeline ─────┤                 discover → fetch → check standing → dedupe → export → alerts
+                                   ├──► Source port ◄── RegAlertSource   (later: ojk.go.id fallback, BPK, JDIH OJK)
+                                   ├──► identity                         OJK canonical IDs + text checks (pure rules)
+                                   └──► Store, monitoring                SQLite + raw blobs, alerts, reports
 ```
 
-- **Add an agency:** add `[agencies.<code>]` with `profile = "generic"` and the sources that cover it. No code is needed until you want canonical IDs.
-- **Replace or add a source:** set `connector = "package.module:Class"` to any `Connector` subclass.
-- Canonical IDs look like `ojk:pojk:2026:1`, `ojk:seojk:2025:35` and `ojk:padk:2026:11`.
+- **Sources** say *where* OJK documents come from. Each is one class behind the `Source` port and one `[sources.<name>]` table in config. The official-source fallback will be added the same way, without changing the pipeline.
+- **Identity** says *what* a document is. Canonical IDs look like `ojk:pojk:2026:1`, `ojk:seojk:2025:35` and `ojk:padk:2026:11`.
 
 ### The corpus (`data/corpus/`)
 
 ```
-regulations.jsonl                                  one line per document
-documents/{agency}/{family}/{year}/{number}/
-  metadata.json                                    identity, evidence, sources, text inventory
-  text.id.md                                       Indonesian text (authoritative)
-  text.en.md                                       English, only if its rights allow export
-documents/{agency}/_unresolved/{source}/{id}/      no confident canonical ID yet
+regulations.jsonl                               one line per document
+documents/ojk/{family}/{year}/{number}/
+  metadata.json                                 identity, evidence, sources, text inventory
+  text.id.md                                    Indonesian text (authoritative)
+  text.en.md                                    English, only if its rights allow export
+documents/ojk/_unresolved/{source}/{id}/        no confident canonical ID yet
 ```
 
 RegAlert's English translations are stored locally, but they are **kept out of the corpus** until RegAlert confirms we may use them. See [rights](docs/plan/02-architecture.md#rights-per-text-artifact).
@@ -78,8 +91,9 @@ RegAlert's English translations are stored locally, but they are **kept out of t
 
 | Source | Status | Used for |
 |---|---|---|
-| [RegAlert](https://regalert.today) API | **Built** (M1) | Discovery, Indonesian text, lineage. English translation pending a licence |
-| [BPK Database Peraturan](https://peraturan.bpk.go.id/) | Planned (M2) | POJK metadata, status, links between regulations, official PDFs |
+| [RegAlert](https://regalert.today) API | **Primary, built** (M1) | Discovery, Indonesian text, lineage. English translation pending a licence |
+| [ojk.go.id](https://www.ojk.go.id/id/regulasi/) official files | **Fallback, planned** (M3) | Official PDFs and our own text extraction, where RegAlert lacks the regulation's text or is unavailable |
+| [BPK Database Peraturan](https://peraturan.bpk.go.id/) | Planned (M2) | POJK metadata, status, links between regulations |
 | [JDIH OJK](https://jdih.ojk.go.id/) | Planned (M4) | Authoritative completeness checks; SEOJK/PADK; sector classification |
 
 The evaluation is in [docs/plan/01-sources.md](docs/plan/01-sources.md) and [docs/research/regalert-feasibility.md](docs/research/regalert-feasibility.md).
@@ -90,9 +104,11 @@ The evaluation is in [docs/plan/01-sources.md](docs/plan/01-sources.md) and [doc
 |---|---|
 | [00 — Overview](docs/plan/00-overview.md) | Goal, scope, definition of done |
 | [01 — Sources](docs/plan/01-sources.md) | Source evaluation, URL patterns, field mappings |
-| [02 — Architecture](docs/plan/02-architecture.md) | Plug-in design, stages, identity, storage, rights, monitoring |
-| [03 — Roadmap](docs/plan/03-roadmap.md) | Milestones M0–M5 with exit criteria |
+| [02 — Architecture](docs/plan/02-architecture.md) | Sources and identity, the two interfaces, stages, storage, rights, monitoring |
+| [03 — Roadmap](docs/plan/03-roadmap.md) | Milestones with exit criteria |
 | [04 — Risks & open questions](docs/plan/04-risks-and-open-questions.md) | Risks, mitigations, pending decisions |
+| [05 — Connector interface](docs/plan/05-connector-contract.md) | How this repo implements the team's connector interface |
+| [Team interface](contract/CONNECTOR_INTERFACE.md) | The interface every team connector implements (shared with the team) |
 
 ## Research
 

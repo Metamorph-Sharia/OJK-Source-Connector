@@ -7,15 +7,14 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-
+from fake_regalert import FakeRegAlert, row
 from test_pipeline import make_pipeline
 
-from fake_regalert import FakeRegAlert, row
-from regingest.config import MonitoringConfig
-from regingest.monitoring import Alert, AlertManager, Evaluation, Notification, Notifier, evaluate
-from regingest.monitoring.health import check_health, exit_code
-from regingest.monitoring.notifiers import FileNotifier, NotifierError, SlackNotifier, WebhookNotifier
-from regingest.store import Store
+from ojk_connector.config import MonitoringConfig
+from ojk_connector.monitoring import Alert, AlertManager, Evaluation, Notification, Notifier, evaluate
+from ojk_connector.monitoring.health import check_health, exit_code
+from ojk_connector.monitoring.notifiers import FileNotifier, NotifierError, SlackNotifier, WebhookNotifier
+from ojk_connector.store import Store
 
 CFG = MonitoringConfig()
 
@@ -139,7 +138,7 @@ def test_file_log_records_everything(tmp_path) -> None:
 
 
 def base_report(**overrides) -> dict:
-    discovery = {"agency": "ojk", "source": "regalert", "full": True, "seen": 977, "known_before": 977,
+    discovery = {"source": "regalert", "full": True, "seen": 977, "known_before": 977,
                  "fill_rates": {"official_url": 1.0}, "previous_fill_rates": {"official_url": 1.0},
                  "missing": [], "new_unresolved": [], "error": None, "error_kind": None}
     content = {"source": "regalert", "limit": 25, "attempted": 25, "fetched": 25, "failed": 0, "remaining": 900,
@@ -183,7 +182,7 @@ def test_rules(overrides: dict, code: str) -> None:
 def test_auth_failure_is_critical_and_tells_how_to_fix_it() -> None:
     ev = evaluate(base_report(**{"content.error": "x", "content.error_kind": "auth"}), CFG)
     alert = next(a for a in ev.alerts if a.code == "auth_failed")
-    assert alert.severity == "critical" and "regingest auth login regalert" in alert.message
+    assert alert.severity == "critical" and "ojk-connector auth login regalert" in alert.message
 
 
 def test_a_paused_backlog_is_not_stalled() -> None:
@@ -202,7 +201,7 @@ def test_run_report_alerts_and_health(tmp_path) -> None:
 
         report = p.run()
         assert report["status"] == "ok"
-        assert (tmp_path / "data/reports/latest.md").read_text().startswith(f"# regingest run {report['run_id']} — OK")
+        assert (tmp_path / "data/reports/latest.md").read_text().startswith(f"# ojk-connector run {report['run_id']} — OK")
         health, _ = check_health(p.store, CFG)
         assert health["status"] == "ok" and exit_code(health["status"]) == 0
 

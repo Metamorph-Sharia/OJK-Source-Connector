@@ -6,14 +6,14 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-
 from fake_regalert import FakeRegAlert, row
-from regingest.config import load_config
-from regingest.connectors import AgencyBinding, Connector, ConnectorContext
-from regingest.connectors.regalert.auth import Token, TokenStore
-from regingest.connectors.regalert.connector import RegAlertConnector
-from regingest.models import DiscoveredDocument, DocumentContent, Origin, Rights, TextArtifact
-from regingest.pipeline import Pipeline
+
+from ojk_connector.config import load_config
+from ojk_connector.models import DiscoveredDocument, DocumentContent, Origin, Rights, TextArtifact
+from ojk_connector.pipeline import Pipeline
+from ojk_connector.sources import Source, SourceContext
+from ojk_connector.sources.regalert.auth import Token, TokenStore
+from ojk_connector.sources.regalert.source import RegAlertSource
 
 TODAY = date(2026, 10, 12)
 
@@ -23,15 +23,8 @@ data_dir = "data"
 credentials_dir = "creds"
 
 [sources.regalert]
-connector = "regalert"
 requests_per_second = 0
 max_content_reads_per_run = 2
-
-[agencies.ojk]
-profile = "ojk"
-[agencies.ojk.sources.regalert]
-regulator = "OJK"
-jurisdiction = "ID"
 """
 
 POJK_1_2026 = "PERATURAN OTORITAS JASA KEUANGAN\nREPUBLIK INDONESIA\nNOMOR 1 TAHUN 2026\nTENTANG\nPENGGUNAAN TENAGA KERJA ASING"
@@ -72,19 +65,19 @@ def fake() -> FakeRegAlert:
 
 
 def make_pipeline(
-    tmp_path: Path, fake: FakeRegAlert, extra_config: str = "", *, notifiers=None, **connectors: Connector
+    tmp_path: Path, fake: FakeRegAlert, extra_config: str = "", *, notifiers=None, **sources: Source
 ) -> Pipeline:
     path = tmp_path / "pipeline.toml"
     path.write_text(CONFIG + extra_config)
     config = load_config(path)
     TokenStore(config.credentials_dir / "regalert.json").save(Token("good-token", "r", None, "c", "https://a/t"))
-    regalert = RegAlertConnector(
+    regalert = RegAlertSource(
         config.sources["regalert"].settings,
-        ConnectorContext("regalert", config.credentials_dir, config.user_agent),
+        SourceContext("regalert", config.credentials_dir, config.user_agent),
         transport=fake.transport(),
         sleep=lambda s: None,
     )
-    return Pipeline(config, connectors={"regalert": regalert, **connectors}, notifiers=notifiers, today=lambda: TODAY)
+    return Pipeline(config, sources={"regalert": regalert, **sources}, notifiers=notifiers, today=lambda: TODAY)
 
 
 def test_end_to_end_paced_backfill(tmp_path, fake) -> None:
@@ -155,42 +148,39 @@ def test_incremental_discovery_uses_cursor_and_lookback(tmp_path, fake) -> None:
         assert again.seen == 2 and again.new == 0
 
 
-class StaticConnector(Connector):
-    """A second, unrelated source: proves agencies and connectors plug in through config alone."""
+class OfficialSiteSource(Source):
+    """Stands in for the planned fallback: the official PDF from ojk.go.id, extracted by us."""
 
-    kind = "static"
-
-    def discover(self, binding: AgencyBinding, since=None, until=None) -> Iterator[DiscoveredDocument]:
-        yield DiscoveredDocument(self.name, "pbi-1", binding.agency, "PBI 1/2025", "2025-01-01", None, None, {})
+    def discover(self, since=None, until=None) -> Iterator[DiscoveredDocument]:
+        yield DiscoveredDocument(self.name, "pojk-1-2026", "Peraturan OJK Nomor 1 Tahun 2026", "2026-02-23", None,
+                                 "https://www.ojk.go.id/id/regulasi/Pages/POJK-1-Tahun-2026-Tenaga-Kerja-Asing.aspx", {})
 
     def fetch_content(self, document: DiscoveredDocument) -> DocumentContent:
         return DocumentContent(
-            texts=[TextArtifact("id", Origin.SOURCE_TEXT, Rights.PUBLIC, "PERATURAN BANK INDONESIA ..."),
-                   TextArtifact("en", Origin.SOURCE_TRANSLATION, Rights.RESTRICTED, "BANK INDONESIA REGULATION ...")],
+            texts=[TextArtifact("id", Origin.SELF_EXTRACTED, Rights.PUBLIC, POJK_1_2026 + "\n(from the official PDF)")],
             snapshots=[],
         )
 
 
-def test_new_agency_and_source_through_config_only(tmp_path, fake) -> None:
-    extra = """
-[sources.bi_site]
-connector = "test_pipeline:StaticConnector"
-
-[agencies.bi]
-profile = "generic"
-[agencies.bi.sources.bi_site]
-"""
-    with make_pipeline(tmp_path, fake, extra) as p:
+def test_a_fallback_source_plugs_in_beside_regalert_and_merges_by_canonical_id(tmp_path, fake) -> None:
+    official = OfficialSiteSource({}, SourceContext("ojk_website", tmp_path / "creds", "test"))
+    with make_pipeline(tmp_path, fake, "\n[sources.ojk_website]\n", ojk_website=official) as p:
         report = p.run(max_reads=10)
         assert report["status"] == "ok"
-        unresolved = tmp_path / "data/corpus/documents/bi/_unresolved/bi_site/pbi-1"
-        assert (unresolved / "text.id.md").read_text().startswith("PERATURAN BANK INDONESIA")
-        assert not (unresolved / "text.en.md").exists()
+        meta = json.loads((tmp_path / "data/corpus/documents/ojk/pojk/2026/1/metadata.json").read_text())
+        assert {s["source"] for s in meta["sources"]} == {"regalert", "ojk_website"}
+        # Our own extraction of the official file outranks RegAlert's copy of the text.
+        assert [(t["language"], t["origin"]) for t in meta["texts"]] == [("id", "self_extracted")]
 
-        # A licence decision relabels stored texts; no refetch needed.
-        assert p.store.set_rights("bi_site", Origin.SOURCE_TRANSLATION, Rights.LICENSED) == 1
+
+def test_relabelling_rights_needs_no_refetch(tmp_path, fake) -> None:
+    with make_pipeline(tmp_path, fake) as p:
+        p.run(max_reads=10)
+        pojk = tmp_path / "data/corpus/documents/ojk/pojk/2026/1"
+        assert not (pojk / "text.en.md").exists()  # RegAlert's translation is restricted by default
+        assert p.store.set_rights("regalert", Origin.SOURCE_TRANSLATION, Rights.LICENSED) == 4
         p.export()
-        assert (unresolved / "text.en.md").exists()
+        assert (pojk / "text.en.md").exists()
 
 
 def test_ctrl_c_during_standing_checks_keeps_data_and_writes_a_partial_report(tmp_path, fake) -> None:
@@ -201,7 +191,7 @@ def test_ctrl_c_during_standing_checks_keeps_data_and_writes_a_partial_report(tm
                                   "first_seen_at": "2026-10-11T00:00:00+00:00",
                                   "last_seen_at": "2026-10-11T00:00:00+00:00"})
         calls = {"n": 0}
-        original = p.connector("regalert").check_status
+        original = p.source("regalert").check_status
 
         def interrupt_after_one(doc):
             calls["n"] += 1
@@ -209,7 +199,7 @@ def test_ctrl_c_during_standing_checks_keeps_data_and_writes_a_partial_report(tm
                 raise KeyboardInterrupt
             return original(doc)
 
-        p.connector("regalert").check_status = interrupt_after_one
+        p.source("regalert").check_status = interrupt_after_one
         with pytest.raises(KeyboardInterrupt):
             p.run()
 
@@ -226,7 +216,7 @@ def test_ctrl_c_during_standing_checks_keeps_data_and_writes_a_partial_report(tm
         assert "INTERRUPTED" in latest and "stopped early" in latest
 
         # The next run picks up where it stopped.
-        p.connector("regalert").check_status = original
+        p.source("regalert").check_status = original
         assert p.run()["content"][0]["fetched"] == 2
 
 

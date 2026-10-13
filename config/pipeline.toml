@@ -1,17 +1,17 @@
-# regingest pipeline configuration.
+# ojk-connector configuration: OJK regulations, from the sources below.
 # Relative paths are resolved against this file's directory.
 # Architecture: docs/plan/02-architecture.md
 
 [pipeline]
 data_dir = "../data"                                  # local store + corpus (git-ignored)
-credentials_dir = "~/.config/regingest/credentials"   # tokens live outside the repo
+credentials_dir = "~/.config/ojk-connector/credentials"   # tokens live outside the repo
 # contact = "mailto:you@example.com"                  # optional: added to the User-Agent
 
-# --- Sources: where documents come from -------------------------------------
-# `connector` is a built-in name or "package.module:Class" (any Connector subclass).
+# --- Sources: where OJK documents come from -----------------------------------
+# One table per source, primary first. Today: RegAlert. Planned fallback: the official
+# files on ojk.go.id (a second [sources.*] table once that Source exists).
 
 [sources.regalert]
-connector = "regalert"
 base_url = "https://mcp.regalert.today"
 requests_per_second = 1.0
 lookback_days = 45                  # RegAlert sometimes dates documents by when it ingested them
@@ -22,22 +22,11 @@ translation_rights = "restricted"   # RegAlert's English translation: kept local
 max_charge_usd_per_read = 0.0       # stop reading if RegAlert ever charges for a read
 # token_env = "REGALERT_ACCESS_TOKEN"   # optional: read a bearer token from this env var instead
 
-# --- Agencies: whose documents, and which sources feed them -------------------
-# `profile` is a built-in agency profile ("ojk", "generic") or "package.module:Class".
-
-[agencies.ojk]
-name = "Otoritas Jasa Keuangan"
-profile = "ojk"
-
-[agencies.ojk.sources.regalert]
-regulator = "OJK"
-jurisdiction = "ID"
-
 # --- Monitoring: alerts, change detection, health ----------------------------
 # Every run writes data/reports/latest.{json,md} and appends notifications to data/alerts.jsonl.
 
 [monitoring]
-max_hours_between_runs = 36      # `regingest health` turns critical after this without a successful run
+max_hours_between_runs = 36      # `ojk-connector health` turns critical after this without a successful run
 full_discovery_every_days = 7    # full re-listing: detects removed documents and source format drift
 discovery_drop_threshold = 0.10  # critical when a full discovery lists 10% fewer documents than stored
 fill_rate_drop_points = 20       # warning when a field is filled 20 points less often than last time
@@ -51,30 +40,20 @@ dedup_title_overlap = 0.8        # how alike two titles must be to treat records
 #
 # [[monitoring.notify]]
 # type = "slack"
-# webhook_url_env = "REGINGEST_SLACK_WEBHOOK_URL"
+# webhook_url_env = "OJK_CONNECTOR_SLACK_WEBHOOK_URL"
 # min_severity = "warning"
 #
 # [[monitoring.notify]]
 # type = "email"
 # smtp_host = "smtp.example.com"
 # smtp_port = 587
-# username_env = "REGINGEST_SMTP_USER"
-# password_env = "REGINGEST_SMTP_PASSWORD"
-# from = "regingest@example.com"
+# username_env = "OJK_CONNECTOR_SMTP_USER"
+# password_env = "OJK_CONNECTOR_SMTP_PASSWORD"
+# from = "ojk-connector@example.com"
 # to = ["data-team@example.com"]
 # min_severity = "error"
 #
 # [[monitoring.notify]]
-# type = "webhook"              # POSTs {"source": "regingest", "notifications": [...]}
-# url_env = "REGINGEST_WEBHOOK_URL"
-# bearer_token_env = "REGINGEST_WEBHOOK_TOKEN"
-
-# Adding an agency needs no code until it needs canonical ids, e.g.:
-#
-# [agencies.bi]
-# name = "Bank Indonesia"
-# profile = "generic"
-#
-# [agencies.bi.sources.regalert]
-# regulator = "BI"
-# jurisdiction = "ID"
+# type = "webhook"              # POSTs {"source": "ojk-connector", "notifications": [...]}
+# url_env = "OJK_CONNECTOR_WEBHOOK_URL"
+# bearer_token_env = "OJK_CONNECTOR_WEBHOOK_TOKEN"
