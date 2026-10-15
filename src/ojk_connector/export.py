@@ -86,7 +86,24 @@ def _text_order(text: TextRow) -> tuple[int, int]:
     return ORIGIN_PRIORITY[text.origin], ASSESSMENT_PRIORITY.get(text.assessment, 1)
 
 
-def export_corpus(store: Store, corpus_dir: Path) -> ExportStats:
+@dataclass(frozen=True)
+class SelectedDocument:
+    """One document to export: its best-identified record, plus the records merged into it as duplicates."""
+
+    primary: sqlite3.Row
+    members: list[sqlite3.Row]  # the primary first
+    review_reason: str | None  # set when the document has no canonical id of its own (it must be reviewed)
+
+    @property
+    def canonical_id(self) -> str | None:
+        return None if self.review_reason else self.primary["canonical_id"]
+
+
+def select_documents(store: Store) -> list[SelectedDocument]:
+    """Every exportable document, the best-identified record claiming a canonical id first.
+
+    Shared by the corpus export and the contract v2 bundle export, so both always agree.
+    """
     rows = list(store.iter_documents())
     merged_into: dict[str, list[sqlite3.Row]] = defaultdict(list)
     primaries = []
@@ -95,41 +112,57 @@ def export_corpus(store: Store, corpus_dir: Path) -> ExportStats:
             merged_into[row["duplicate_of"]].append(row)
         else:
             primaries.append(row)
-    # Best-identified records claim their canonical path first.
+    # Best-identified records claim their canonical id first.
     primaries.sort(key=lambda r: (r["id_origin"] != "text", _CONFIDENCE_ORDER.get(r["id_confidence"], 9),
                                   r["content_fetched_at"] is None, r["first_seen_at"], r["source_id"]))
 
+    selected = []
+    claimed: dict[str, str] = {}
+    for primary in primaries:
+        key = doc_key(primary["source"], primary["source_id"])
+        reason = _review_reason(primary)
+        if reason is None and primary["canonical_id"] in claimed:
+            reason = f"canonical path already used by {claimed[primary['canonical_id']]}"
+        if reason is None:
+            claimed[primary["canonical_id"]] = key
+        selected.append(SelectedDocument(primary, [primary, *merged_into.get(key, [])], reason))
+    return selected
+
+
+def choose_texts(store: Store, members: list[sqlite3.Row]) -> tuple[dict[str, TextRow], int]:
+    """The best exportable text per language among a document's records, and how many were withheld for rights."""
+    chosen: dict[str, TextRow] = {}
+    withheld = 0
+    for member in members:
+        for text in store.texts_for(member["source"], member["source_id"]):
+            if text.rights not in EXPORTABLE_RIGHTS:
+                withheld += 1
+                continue
+            current = chosen.get(text.language)
+            if current is None or _text_order(text) < _text_order(current):
+                chosen[text.language] = text
+    return chosen, withheld
+
+
+def export_corpus(store: Store, corpus_dir: Path) -> ExportStats:
     stats = ExportStats()
     tmp = corpus_dir.parent / f".{corpus_dir.name}.tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     (tmp / "documents").mkdir(parents=True)
     exported_at = utcnow()
-    claimed: dict[Path, str] = {}
 
     with (tmp / "regulations.jsonl").open("w", encoding="utf-8") as index:
-        for primary in primaries:
-            members = [primary, *merged_into.get(doc_key(primary["source"], primary["source_id"]), [])]
-            reason = _review_reason(primary)
-            path = None if reason else _id_path(primary["canonical_id"])
-            if path is not None and path in claimed:
-                reason = f"canonical path already used by {claimed[path]}"
-                path = None
-            if path is None:
+        for selected in select_documents(store):
+            primary, members, reason = selected.primary, selected.members, selected.review_reason
+            if reason:
                 path = _unresolved_path(primary)
                 stats.unresolved += 1
             else:
-                claimed[path] = doc_key(primary["source"], primary["source_id"])
+                path = _id_path(primary["canonical_id"])
             stats.documents += 1
 
-            chosen: dict[str, TextRow] = {}
-            for member in members:
-                for text in store.texts_for(member["source"], member["source_id"]):
-                    if text.rights not in EXPORTABLE_RIGHTS:
-                        stats.texts_withheld += 1
-                        continue
-                    current = chosen.get(text.language)
-                    if current is None or _text_order(text) < _text_order(current):
-                        chosen[text.language] = text
+            chosen, withheld = choose_texts(store, members)
+            stats.texts_withheld += withheld
 
             target = tmp / path
             target.mkdir(parents=True, exist_ok=True)

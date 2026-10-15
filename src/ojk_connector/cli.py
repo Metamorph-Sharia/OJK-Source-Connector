@@ -8,9 +8,12 @@ import logging
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ojk_connector.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from ojk_connector.export_v2 import export_bundle
 from ojk_connector.models import Origin, Rights
 from ojk_connector.monitoring.health import check_health, exit_code
 from ojk_connector.pipeline import Pipeline
@@ -61,7 +64,11 @@ def _parser() -> argparse.ArgumentParser:
 
     sub.add_parser("dedupe", help="recompute duplicate and id-collision decisions")
     sub.add_parser("reparse", help="re-derive ids and text checks from stored data (after rule changes); no network")
-    sub.add_parser("export", help="rebuild data/corpus from the store")
+    export = sub.add_parser("export", help="rebuild data/corpus, or write a contract v2 bundle for the platform")
+    export.add_argument("--format", choices=("corpus", "v2"), default="corpus",
+                        help="corpus: data/corpus/ (default) · v2: a contract v2 bundle (needs --out)")
+    export.add_argument("--out", type=Path, help="v2: an empty or new directory for the bundle")
+    export.add_argument("--run-id", help="v2: the run this bundle belongs to (default: the current UTC time)")
     sub.add_parser("status", help="counts by source, status, identity and rights")
     sub.add_parser("review", help="records that need a person's attention")
 
@@ -154,6 +161,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             counts["dedup"] = {k: v for k, v in pipeline.dedupe().as_dict().items() if k in ("duplicates", "collisions")}
             _print(counts)
             print("run `ojk-connector export` to rebuild the corpus", file=sys.stderr)
+            return EXIT_OK
+        if args.command == "export" and args.format == "v2":
+            if args.out is None:
+                print("export --format v2 needs --out DIR", file=sys.stderr)
+                return EXIT_USAGE
+            run_id = args.run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            _print(export_bundle(pipeline.store, args.out, run_id=run_id).as_dict())
             return EXIT_OK
         if args.command == "export":
             _print(pipeline.export().as_dict())

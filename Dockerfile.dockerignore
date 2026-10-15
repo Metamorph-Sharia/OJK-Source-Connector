@@ -1,0 +1,11 @@
+# Only what OJK-Source-Connector/Dockerfile copies: the build context is the whole workspace, data included.
+*
+!Metamorph-Knowledge-Platform/packages/metamorph-contract
+!OJK-Source-Connector/pyproject.toml
+!OJK-Source-Connector/uv.lock
+!OJK-Source-Connector/README.md
+!OJK-Source-Connector/src
+!OJK-Source-Connector/config
+**/__pycache__
+**/.venv
+**/.pytest_cache

@@ -233,3 +233,20 @@ def test_header_disagreeing_with_a_trusted_identifier_is_a_conflict(tmp_path, fa
         assert (r["canonical_id"], r["id_confidence"]) == ("ojk:seojk:2016:116", "conflict")
         assert "metadata says ojk:seojk:2016:16" in r["id_evidence"]
         assert any(i["source_id"] == "seojk-16" for i in p.store.review_items()["id_unresolved"])
+
+
+def test_a_source_that_refuses_us_is_left_alone_for_the_rest_of_the_run(tmp_path, fake) -> None:
+    """HTTP 403: credentials are fine but access is refused. Asking 900 more times won't change that."""
+    with make_pipeline(tmp_path, fake) as p:
+        p.run()
+        fake.forbidden = True
+        before = len(fake.calls)
+
+        report = p.run()
+
+    assert len(fake.calls) - before == 1  # the first refusal ends every stage's use of RegAlert
+    assert report["discovery"][0]["error_kind"] == "forbidden"
+    assert report["status_checks"][0]["error_kind"] == "skipped"  # not asked again
+    refused = [a for a in report["alerts"] if a["code"] == "access_forbidden"]
+    assert [a["severity"] for a in refused] == ["critical"]
+    assert "refused" in refused[0]["message"]

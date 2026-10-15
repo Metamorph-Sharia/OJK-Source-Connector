@@ -25,6 +25,7 @@ uv run ojk-connector run                       # the whole pipeline, standalone 
 uv run ojk-connector health                    # for a scheduler: exit 0 ok / 1 warning / 2 critical
 uv run ojk-connector review                    # records that need a person's attention
 uv run ojk-connector events --since 2026-10-01 # what changed: new, changed, missing, amended, duplicates
+uv run ojk-connector export --format v2 --out data/exports/v2/RUN   # a contract v2 bundle for the platform loader
 ```
 
 What each command does:
@@ -46,6 +47,18 @@ Other commands:
 - `reparse`: re-applies identity and text rules to stored data, with no network calls.
 - `status`: counts by source, status, identity and rights.
 - `rights`: relabels stored texts after a licence decision.
+
+## For the platform (contract v2)
+
+`export --format v2` writes the store as one [contract v2 bundle](../Metamorph-Knowledge-Platform/packages/metamorph-contract/CONTRACT_V2.md): a full snapshot that `metamorph load` reads into the platform's PostgreSQL. It uses the same document selection and text choice as the corpus export (`select_documents`, `choose_texts`), so the two never disagree.
+
+- **IDs:** `ojk:{pojk|seojk|padk}:{year}:{number}`. A record without a confident ID, or one that lost an ID collision, is exported under `unresolved:ojk:…` and queued for review.
+- **Title:** the "TENTANG …" subject from the regulation's own header, falling back to RegAlert's title.
+- **Status:** the latest standing check, otherwise RegAlert's lineage status.
+- **Citations:** RegAlert lineage (`based_on` → `legal_basis`, `amends`, `supersedes`), with the target's canonical ID when we hold it (`ojk:…`) or it is a national law (`id:uu:…`).
+- **Texts:** only `public` or `licensed` ones. RegAlert's English translation stays out. There are no files until the official PDFs arrive (roadmap M3).
+
+**As a container:** the platform's Airflow runs this connector from [Dockerfile](Dockerfile), built from the workspace root, the directory holding every repository: `docker build -f OJK-Source-Connector/Dockerfile -t metamorph/ojk-connector:dev .` (or `docker compose --profile connectors build` in Metamorph-Knowledge-Platform). `data/` is bind-mounted, not copied, so scheduled runs and your own CLI runs share one store. Don't run both at once. The RegAlert token directory is mounted too. If RegAlert refuses access (HTTP 403), the run stops asking at once and raises a critical `access_forbidden` alert.
 
 ## For the orchestrator
 
@@ -115,3 +128,4 @@ The evaluation is in [docs/plan/01-sources.md](docs/plan/01-sources.md) and [doc
 | Document | Contents |
 |---|---|
 | [RegAlert feasibility](docs/research/regalert-feasibility.md) | Live API test of RegAlert as an OJK source: coverage, field quality, problems found, licensing |
+| [OJK publishing and storage](docs/research/ojk-publishing-and-storage/README.md) | How OJK publishes and structures its regulations (ojk.go.id, JDIH OJK, document anatomy), reconciliation against our corpus, and the recommended storage architecture for AI legal search |

@@ -103,3 +103,11 @@ def test_vendored_interface_matches_the_team_document() -> None:
     doc = (ROOT / "contract/CONNECTOR_INTERFACE.md").read_text()
     published = re.findall(r"```python\n(.*?)```", doc, re.S)[0]
     assert (ROOT / "src/ojk_connector/source_connector.py").read_text() == published
+
+
+def test_a_refusal_stops_the_orchestrator_run_rather_than_failing_one_item(tmp_path, fake) -> None:
+    item = make_connector(tmp_path, fake).discover(cursor=None).items[0]
+    fake.forbidden = True
+
+    with pytest.raises(SourceUnavailable):
+        make_connector(tmp_path, fake).fetch(item, MemoryStore())

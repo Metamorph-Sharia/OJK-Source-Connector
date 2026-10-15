@@ -225,3 +225,17 @@ def test_health_turns_critical_when_runs_stop(tmp_path) -> None:
     later = datetime.now(UTC) + timedelta(hours=CFG.max_hours_between_runs + 1)
     health, ev = check_health(store, CFG, now=later)
     assert health["status"] == "critical" and ev.alerts[0].code == "stale_run"
+
+
+def test_a_refusal_alert_resolves_once_the_source_answers_again() -> None:
+    from ojk_connector.config import MonitoringConfig
+    from ojk_connector.monitoring.alerts import evaluate
+
+    def report(kind):
+        stats = {"source": "regalert", "full": False, "seen": 0, "error": "403" if kind else None, "error_kind": kind}
+        return {"discovery": [stats]}
+
+    refused, answering = evaluate(report("forbidden"), MonitoringConfig()), evaluate(report(None), MonitoringConfig())
+
+    assert [a.code for a in refused.alerts] == ["access_forbidden"]
+    assert "access_forbidden:regalert" in answering.checked and not answering.alerts

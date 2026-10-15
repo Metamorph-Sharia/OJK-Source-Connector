@@ -33,6 +33,7 @@ from ojk_connector.sources import (
     SourceAuthError,
     SourceContext,
     SourceError,
+    SourceForbidden,
     source_class,
 )
 from ojk_connector.store import Store, doc_key, utcnow
@@ -47,6 +48,8 @@ PROGRESS_EVERY = 25  # log a progress line every N items in long stages
 
 
 def _error_kind(e: SourceError) -> str:
+    if isinstance(e, SourceForbidden):
+        return "forbidden"
     return "auth" if isinstance(e, SourceAuthError) else "source"
 
 
@@ -141,6 +144,7 @@ class Pipeline:
         self._today = today
         self._run_id: int | None = None
         self._progress: dict[str, list[Any]] | None = None  # live stage stats during run()
+        self._refused: dict[str, str] = {}  # source → its refusal (HTTP 403): left alone until the next run
 
     def close(self) -> None:
         for source in self._sources.values():
@@ -175,6 +179,15 @@ class Pipeline:
     def _sources_in_use(self, only: Iterable[str] | None) -> list[str]:
         wanted = set(only or ())
         return [n for n in self.config.sources if not wanted or n in wanted]
+
+    def _skip_refused(self, source_name: str, stats: Any) -> bool:
+        """A source that refused us earlier in this run is not asked again until the next run."""
+        if source_name not in self._refused:
+            return False
+        stats.error, stats.error_kind = f"skipped: refused earlier in this run ({self._refused[source_name]})", "skipped"
+        stats.partial = False
+        log.warning("skipping %s: it refused access earlier in this run", source_name)
+        return True
 
     def _track(self, section: str, stats: Any) -> None:
         if self._progress is not None:
@@ -227,6 +240,8 @@ class Pipeline:
         except SourceError as e:
             stats.error, stats.error_kind = f"{type(e).__name__}: {e}", _error_kind(e)
             log.error("discovery from %s failed: %s", source_name, stats.error)
+            if isinstance(e, SourceForbidden):
+                self._refused[source_name] = str(e)
         else:
             if stats.seen:
                 stats.fill_rates = {f: round(n / stats.seen, 4) for f, n in filled.items()}
@@ -270,6 +285,9 @@ class Pipeline:
             limit = max_reads if max_reads is not None else int(settings.get("max_content_reads_per_run", DEFAULT_MAX_READS))
             stats = FetchStats(source_name, limit)
             self._track("content", stats)
+            if self._skip_refused(source_name, stats):
+                results.append(stats)
+                continue
             self._fetch_source(source_name, int(settings.get("max_attempts", DEFAULT_MAX_ATTEMPTS)), stats)
             stats.remaining = self.store.count_pending(source_name)
             stats.partial = False
@@ -297,10 +315,12 @@ class Pipeline:
                 stats.paused, stats.pause_reason = True, str(e)
                 log.info("%s paused content reads: %s", source_name, e)
                 return
-            except SourceAuthError as e:
+            except (SourceAuthError, SourceForbidden) as e:
                 stats.attempted -= 1
-                stats.error, stats.error_kind = f"{type(e).__name__}: {e}", "auth"
+                stats.error, stats.error_kind = f"{type(e).__name__}: {e}", _error_kind(e)
                 log.error("%s: %s", source_name, e)
+                if isinstance(e, SourceForbidden):
+                    self._refused[source_name] = str(e)
                 return
             except SourceError as e:
                 permanent = isinstance(e, PermanentSourceError)
@@ -384,6 +404,9 @@ class Pipeline:
                 continue
             stats = StatusStats(source_name, budget if budget is not None else self.config.monitoring.status_checks_per_run)
             self._track("status_checks", stats)
+            if self._skip_refused(source_name, stats):
+                results.append(stats)
+                continue
             log.info("checking whether stored documents were amended or replaced on %s (up to %s, free calls)",
                      source_name, stats.budget)
             for doc in self.store.status_check_queue(source_name, stats.budget):
@@ -392,8 +415,10 @@ class Pipeline:
                 except QuotaExhausted:
                     stats.paused = True
                     break
-                except SourceAuthError as e:
-                    stats.error, stats.error_kind = f"{type(e).__name__}: {e}", "auth"
+                except (SourceAuthError, SourceForbidden) as e:
+                    stats.error, stats.error_kind = f"{type(e).__name__}: {e}", _error_kind(e)
+                    if isinstance(e, SourceForbidden):
+                        self._refused[source_name] = str(e)
                     break
                 except SourceError as e:
                     stats.failed += 1
@@ -506,6 +531,7 @@ class Pipeline:
     ) -> dict[str, Any]:
         run_id = self._run_id = self.store.start_run("run")
         self._progress = {}
+        self._refused = {}
         report: dict[str, Any] = {"run_id": run_id, "started_at": utcnow(), "stages_completed": []}
         try:
             self.discover(sources=sources, full=full)

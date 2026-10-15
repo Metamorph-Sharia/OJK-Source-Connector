@@ -9,7 +9,13 @@ from typing import Any
 
 import httpx
 
-from ojk_connector.sources.base import PermanentSourceError, QuotaExhausted, SourceAuthError, SourceError
+from ojk_connector.sources.base import (
+    PermanentSourceError,
+    QuotaExhausted,
+    SourceAuthError,
+    SourceError,
+    SourceForbidden,
+)
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +108,8 @@ class RegAlertClient:
                     raise SourceError(f"RegAlert {path}: rate limited ({detail})")
                 self._sleep(min(_retry_after(response, 5.0), 60.0))
                 continue
+            if response.status_code == 403:
+                raise SourceForbidden(f"RegAlert {path}: access refused ({detail})")
             if response.status_code == 404:
                 raise PermanentSourceError(f"RegAlert {path}: not found ({detail})")
             if response.status_code >= 500 and not last_try:

@@ -34,6 +34,11 @@ class SourceAuthError(SourceError):
     """Credentials are missing, expired or rejected."""
 
 
+class SourceForbidden(SourceError):
+    """The source refuses us (HTTP 403) although our credentials are valid. A person must find out why; never
+    work around it, and stop asking for the rest of the run."""
+
+
 class QuotaExhausted(SourceError):
     """The source has paused us (fair use, rate cap). Stop for now; resume on a later run."""
 

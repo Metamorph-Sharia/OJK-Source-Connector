@@ -40,6 +40,7 @@ from ojk_connector.sources import (
     SourceAuthError,
     SourceContext,
     SourceError,
+    SourceForbidden,
     source_class,
 )
 
@@ -115,6 +116,8 @@ def _translated_errors(*, item_failure: bool) -> Iterator[None]:
         raise SourceUnavailable(str(e)) from e
     except SourceAuthError as e:
         raise AuthFailed(str(e)) from e
+    except SourceForbidden as e:  # refused, not broken: stop the whole run, never retry item by item
+        raise SourceUnavailable(str(e)) from e
     except SourceError as e:
         if not item_failure:
             raise SourceUnavailable(str(e)) from e

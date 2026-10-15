@@ -10,6 +10,7 @@ from ojk_connector.sources.base import (
     SourceAuthError,
     SourceContext,
     SourceError,
+    SourceForbidden,
 )
 from ojk_connector.sources.regalert.source import RegAlertSource
 
@@ -33,5 +34,6 @@ __all__ = [
     "SourceAuthError",
     "SourceContext",
     "SourceError",
+    "SourceForbidden",
     "source_class",
 ]

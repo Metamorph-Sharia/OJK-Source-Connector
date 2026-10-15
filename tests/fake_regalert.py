@@ -24,6 +24,7 @@ class FakeRegAlert:
     report_paused_after: int | None = None  # after this many reads, responses report the account as paused
     charged_usd: str = "$0.00"
     token: str = "good-token"
+    forbidden: bool = False  # RegAlert refuses every request (HTTP 403), as it did on 2026-10-15
     calls: list[httpx.Request] = field(default_factory=list)
     reads: int = 0
     lineage_calls: int = 0
@@ -35,6 +36,8 @@ class FakeRegAlert:
         self.calls.append(request)
         if request.headers.get("Authorization") != f"Bearer {self.token}":
             return httpx.Response(401, json={"error": "unauthorized", "message": "no"})
+        if self.forbidden:
+            return httpx.Response(403, json={"error": {"code": "403", "message": "Forbidden"}})
         path, q = request.url.path, request.url.params
         if path == "/v1/account":
             return httpx.Response(200, json={"access": "free", "full_text_reads": self.full_text_reads})

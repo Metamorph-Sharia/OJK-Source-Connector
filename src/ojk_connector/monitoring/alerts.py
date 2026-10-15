@@ -57,6 +57,15 @@ class Evaluation:
 
 def _error_condition(ev: Evaluation, stage: str, stats: dict[str, Any], scope: str) -> None:
     source = stats["source"]
+    if stats.get("error_kind") == "skipped":  # its refusal was reported by the stage that met it
+        return
+    refused = stats.get("error_kind") == "forbidden"
+    ev.condition(not refused, "access_forbidden", source, "critical",
+                 f"{source}: access refused (HTTP 403) during {stage}, although sign-in works. "
+                 "Ask the source why; the pipeline stopped asking for this run and won't work around it.",
+                 error=stats.get("error"))
+    if refused:
+        return
     auth_failed = stats.get("error_kind") == "auth"
     ev.condition(not auth_failed, "auth_failed", source, "critical",
                  f"{source}: sign-in failed ({stage}). Run `ojk-connector auth login {source}`.", error=stats.get("error"))
