@@ -1,10 +1,10 @@
 """The OJK connector as the orchestrator sees it: the team's ``SourceConnector`` interface.
 
-The orchestrator calls ``discover`` and ``fetch`` and never sees RegAlert, the local
-pipeline or its store. Every source in config is offered: today RegAlert; when the
-official-source fallback (ojk.go.id) is added as another ``Source``, its documents
-appear here too, without changes to this module. Merging documents from several
-sources stays out of the connector, as the interface requires.
+The orchestrator calls ``discover`` and ``fetch`` and never sees JDIH OJK, the local
+pipeline or its store. Every source in config is offered: today JDIH OJK, OJK's own
+legal database; another ``Source`` (e.g. ojk.go.id) would appear here too, without
+changes to this module. Merging documents from several sources stays out of the
+connector, as the interface requires.
 
     connector = OJKConnector({"config": "config/pipeline.toml"})
 """
@@ -54,7 +54,7 @@ def _today() -> date:
 class OJKConnector(SourceConnector):
     name = "ojk"
     version = __version__
-    max_concurrency = 1  # RegAlert's full-text reads are rationed: one at a time
+    max_concurrency = 1  # sources are paced (JDIH OJK: one request per second): one item at a time
 
     def __init__(
         self,
@@ -154,7 +154,7 @@ def _to_document(item: Discovered) -> DiscoveredDocument:
 
 
 def _version(source: Source, doc: DiscoveredDocument) -> str:
-    """Changes when a field that signals new content changes (e.g. RegAlert's file URL)."""
+    """Changes when a field that signals new content changes (e.g. a regulation's number or type)."""
     fields = {"title": doc.title, **{k: doc.metadata.get(k) for k in source.content_fields}}
     return hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 

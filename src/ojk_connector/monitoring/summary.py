@@ -55,6 +55,12 @@ def render_summary(report: dict[str, Any]) -> str:
         [[s["source"], s["checked"], s["baselined"], len(s.get("changed", [])), s["failed"]]
          for s in report.get("status_checks", [])],
     )
+    lines += ["## Catalogue entries", ""]
+    lines += _table(
+        ["source", "read", "first read", "changed", "failed", "unknown wording"],
+        [[e["source"], e["read"], e["first_reads"], len(e.get("changed", [])), e["failed"],
+          len(e.get("unknown_wording", []))] for e in report.get("entries", [])],
+    )
     dedup = report.get("dedup") or {}
     export = report.get("export") or {}
     lines += [

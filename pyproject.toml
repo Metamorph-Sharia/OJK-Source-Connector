@@ -1,12 +1,14 @@
 [project]
 name = "ojk-connector"
-version = "0.1.0"
-description = "Modular ingestion pipeline for regulatory documents from multiple agencies (OJK first)."
+version = "0.2.0"
+description = "OJK regulations from OJK's own legal database (JDIH OJK): discovery, catalogue metadata, official files and text."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "beautifulsoup4>=4.12",
     "httpx>=0.27",
     "metamorph-contract",
+    "pymupdf>=1.24",
 ]
 
 [project.scripts]

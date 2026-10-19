@@ -4,7 +4,7 @@ The orchestrator uses ``OJKConnector`` (see ``contract/CONNECTOR_INTERFACE.md``)
 ``ojk-connector`` on the command line runs the standalone pipeline.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from ojk_connector.connector import OJKConnector  # noqa: E402  (needs __version__)
 

@@ -133,6 +133,20 @@ def evaluate(report: dict[str, Any], cfg: MonitoringConfig) -> Evaluation:
         ev.event("regulation_status_changed", s["source"], "info",
                  f"{len(s.get('changed', []))} regulations were amended or replaced.", s.get("changed", []))
 
+    for e in report.get("entries", []):
+        _error_condition(ev, "entry", e, e["source"])
+        if not e.get("partial") and e["read"]:
+            rate = e["failed"] / (e["read"] + e["failed"])
+            ev.condition(rate <= cfg.content_failure_rate, "entry_failure_rate", e["source"], "error",
+                         f"{e['source']}: {e['failed']} of {e['read'] + e['failed']} catalogue entries could not be "
+                         f"read ({rate:.0%}). The page layout may have changed.")
+        ev.event("catalogue_entry_changed", e["source"], "info",
+                 f"{e['source']}: the catalogue entries of {len(e.get('changed', []))} regulations changed.",
+                 e.get("changed", []))
+        ev.event("entry_unknown_wording", e["source"], "warning",
+                 f"{e['source']}: {len(e.get('unknown_wording', []))} entries state their standing in words the "
+                 "parser doesn't know; their status is left unknown.", e.get("unknown_wording", []))
+
     dedup = report.get("dedup") or {}
     ev.event("id_collision", "dedup", "warning",
              f"{len(dedup.get('new_collisions', []))} records share a canonical id but look like different documents.",

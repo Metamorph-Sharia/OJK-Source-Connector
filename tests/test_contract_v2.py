@@ -4,16 +4,20 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
 from metamorph_contract import Kind, Relation, Rights, Status, TextOrigin, problems
 
 from ojk_connector.contract_v2 import (
     HeldDocument,
+    HeldEntry,
+    HeldFile,
     HeldText,
-    indonesian_subject,
     national_law_id,
     normalized_document,
     old_style_number,
 )
+from ojk_connector.identity import indonesian_subject
+from ojk_connector.models import CatalogEntry, EntryRelation, RelationKind, Standing
 
 HEADER = (
     "OTORITAS JASA KEUANGAN\nREPUBLIK INDONESIA\nSALINAN\nPERATURAN OTORITAS JASA KEUANGAN\nNOMOR 5/POJK.05/2014\n"
@@ -130,3 +134,61 @@ def test_a_law_named_after_an_english_title_is_still_recognised() -> None:
     title = "Capital Market Law, Law No. 8 of 1995 (Undang-Undang Nomor 8 Tahun 1995 tentang Pasar Modal)"
 
     assert national_law_id(title) == "id:uu:1995:8"
+
+
+# --- an official catalogue entry (JDIH OJK) ---------------------------------------------------------------
+
+def entry_of(*relations, standing=Standing.REVOKED, dates=None) -> HeldEntry:
+    return HeldEntry(
+        CatalogEntry(title="Peraturan Otoritas Jasa Keuangan Nomor 5/POJK.05/2014 tentang Perizinan Usaha",
+                     standing=standing, dates=dates or {"enacted": "2014-03-21", "promulgated": "2014-03-24"},
+                     relations=relations, files=(), fields={"Nomor Peraturan": "5"}),
+        source="jdih_ojk", source_id="guid-5", url="https://jdih.ojk.go.id/Web/ViewPeraturan/Detail/guid-5/03/06",
+        read_at="2026-10-16T07:00:00+00:00",
+    )
+
+
+def test_the_official_entry_outranks_the_trackers_status_and_lineage() -> None:
+    document = normalize(held(entry=entry_of(
+        EntryRelation(RelationKind.REVOKES, "POJK Nomor 1/POJK.05/2013"),
+        EntryRelation(RelationKind.LEGAL_BASIS, "UU Nomor 21 Tahun 2011 tentang Otoritas Jasa Keuangan"),
+        EntryRelation(RelationKind.REVOKED_BY, "POJK Nomor 10 Tahun 2025"),  # the other document's claim
+    )))
+
+    assert problems(document) == []
+    assert (document.document.status.value, document.document.status.source, document.document.status.as_of) == (
+        Status.REVOKED, "jdih_ojk", "2026-10-16")
+    assert (document.document.dates.enacted, document.document.dates.promulgated) == ("2014-03-21", "2014-03-24")
+    assert [(c.relation, c.target_id) for c in document.citations] == [
+        (Relation.REVOKES, "ojk:pojk:2013:1"), (Relation.LEGAL_BASIS, "id:uu:2011:21")]
+    assert document.source_fields["catalog_entry"]["fields"] == {"Nomor Peraturan": "5"}
+    assert document.source_fields["uid"] == "172f8b0a"  # the primary record's own fields stay as they were
+
+
+@pytest.mark.parametrize(
+    ("articles", "addresses"),
+    [
+        ("Pasal 187", ["pasal-187"]),
+        ("Pasal 42 ayat (3) dan Pasal 42 ayat (5)", ["pasal-42/ayat-3", "pasal-42/ayat-5"]),
+        ("Pasal 20 ayat (1) huruf a", ["pasal-20/ayat-1"]),
+        ("Bab III Pasal 11 sampai dengan Pasal 19", [None]),  # a range: the whole document, no address
+    ],
+)
+def test_a_partial_revocation_points_at_its_articles(articles: str, addresses: list[str | None]) -> None:
+    document = normalize(held(entry=entry_of(
+        EntryRelation(RelationKind.PARTLY_REVOKES, "POJK Nomor 12/POJK.03/2016", articles))))
+    assert [c.to_address for c in document.citations] == addresses
+    assert {c.relation for c in document.citations} == {Relation.PARTLY_REVOKES}
+
+
+def test_an_entry_without_relations_keeps_the_trackers_lineage() -> None:
+    document = normalize(held(entry=entry_of()))
+    assert [c.relation for c in document.citations] == [Relation.LEGAL_BASIS]
+    assert "RegAlert lineage" in document.citations[0].evidence
+
+
+def test_a_document_held_only_as_official_files_is_valid() -> None:
+    pdf = HeldFile("a" * 64, "main", "application/pdf", "https://jdih.ojk.go.id/x", "2014pojk005.pdf", 12)
+    document = normalize(held(texts=(), files=(pdf,), entry=entry_of()))
+    assert problems(document) == []
+    assert document.document.title == "Perizinan Usaha"  # from the official title, as no text is held

@@ -132,7 +132,21 @@ def test_store_migrates_a_version_1_database(tmp_path) -> None:
     )
     old.close()
     store = Store(tmp_path)
-    assert store.db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert store.db.execute("PRAGMA user_version").fetchone()[0] == 3
     assert store.row("regalert", "x")["missing_since"] is None and store.row("regalert", "x")["status_priority"] == 0
+    assert store.row("regalert", "x")["entry_read_at"] is None
     store.record_event("test", "info", "ok")
     Store(tmp_path)  # idempotent
+
+
+def test_store_migrates_a_version_2_database_keeping_its_records(tmp_path) -> None:
+    store = Store(tmp_path)
+    store.db.execute("ALTER TABLE source_documents DROP COLUMN entry_json")
+    store.db.execute("PRAGMA user_version = 2")
+    store.db.commit()
+    store.close()
+
+    migrated = Store(tmp_path)
+    assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == 3
+    columns = {r["name"] for r in migrated.db.execute("PRAGMA table_info(source_documents)")}
+    assert {"entry_json", "entry_fingerprint", "entry_read_at"} <= columns

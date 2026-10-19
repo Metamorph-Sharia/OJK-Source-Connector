@@ -4,10 +4,12 @@
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| RegAlert becomes unavailable or blocks us. On 2026-10-13 its edge returned HTTP 403 to every request from our network, signed in or not | Seen once | High | Everything already read is stored locally and can be re-parsed offline. The official-source fallback (M3) plugs in as a second `Source` with no pipeline change. Raise it with RegAlert (Q9, Q10) |
+| ~~RegAlert becomes unavailable or blocks us~~ **Happened:** HTTP 403 from 2026-10-13; our account was banned by 2026-10-16 | Done | High | RegAlert retired; JDIH OJK is the primary source (M2b). Its 973 stored texts stay and export. Never re-register to get around the ban |
+| JDIH OJK's listing lacks regulations we know exist: 67 held from RegAlert (POJK 2024 no. 10–48, PADK 2026, POJK 2026 no. 11–16, a few older) are in no JDIH listing, under any type code (checked 2026-10-16) | Confirmed | High | We keep the held copies. A new regulation JDIH doesn't list is missed until it does: add ojk.go.id as a second discovery source, and compare the two listings every run |
+| A JDIH file is broken (POJK 37/2019's FAQ answers HTTP 500) | Seen once | Low | Only the main file is required; a broken secondary file is recorded (`files_missing`) and listed by `ojk-connector review` |
 | The team's connectors drift from the shared interface | Medium | Medium | Each repo copies `source_connector.py` unmodified; a test fails if this repo's copy differs from `contract/CONNECTOR_INTERFACE.md` |
-| JDIH OJK's firewall blocks our crawler (it already rejected plain `curl`) | High | High | Identifying UA, low request rate, real browser via Playwright if needed. Test from the actual runtime environment in M0. If still blocked, ask OJK for access |
-| JDIH OJK lists need JavaScript | Confirmed | Medium | Find the XHR endpoint first; fall back to Playwright |
+| JDIH OJK's firewall blocks our crawler (it rejected plain `curl` on 2026-10-12; accepted it 10-14 and 10-16) | Medium | High | Identifying UA, one request per second. The firewall notice is detected even with HTTP 200 and raises `access_forbidden` (critical); the run stops asking. If blocked, ask OJK for access |
+| ~~JDIH OJK lists need JavaScript~~ | Resolved | — | The list's JSON endpoint (`ListDataPeraturan`) returns every row of a sector × type |
 | Source layout changes break parsers without anyone noticing | Medium | High | Parser fixtures and tests, alerts on zero records or falling field-fill rates, versioned parsers, re-parsing from stored snapshots |
 | BPK metadata errors (e.g. wrong slugs, wrong subject tags) | Confirmed | Medium | Don't use slugs as identifiers. Check BPK fields against JDIH during reconciliation, and record provenance per field |
 | BPK has almost no SEOJK/PADK | Confirmed | High | JDIH OJK is the primary source for that family |

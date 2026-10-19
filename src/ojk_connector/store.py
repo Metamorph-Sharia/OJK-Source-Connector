@@ -18,15 +18,15 @@ import os
 import sqlite3
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from ojk_connector.identity import AGENCY, IdResolution
-from ojk_connector.models import DiscoveredDocument, DocumentContent, Origin, Rights, StatusCheck
+from ojk_connector.models import CatalogEntry, DiscoveredDocument, DocumentContent, Origin, Rights, StatusCheck
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS source_documents (
@@ -115,6 +115,14 @@ _V2_COLUMNS = {
     "discovery_state": {
         "last_full_at": "TEXT",
         "fill_rates_json": "TEXT",       # field fill rates at the last full discovery
+    },
+}
+# Version 3: catalogue entries (a source's full record of a document, read without its files).
+_V3_COLUMNS = {
+    "source_documents": {
+        "entry_json": "TEXT",            # CatalogEntry.facts()
+        "entry_fingerprint": "TEXT",
+        "entry_read_at": "TEXT",
     },
 }
 _V2_TABLES = """
@@ -240,7 +248,7 @@ class Store:
         if version >= SCHEMA_VERSION:
             return
         with self.db:
-            for table, columns in _V2_COLUMNS.items():
+            for table, columns in (*_V2_COLUMNS.items(), *_V3_COLUMNS.items()):
                 existing = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
                 for name, decl in columns.items():
                     if name not in existing:
@@ -368,13 +376,16 @@ class Store:
 
     # --- content queue ---------------------------------------------------
 
-    def pending_content(self, source: str) -> list[DiscoveredDocument]:
-        """Documents needing content: never-fetched first (newest first), then re-reads."""
+    def pending_content(self, source: str, canonical_ids: Iterable[str] | None = None) -> list[DiscoveredDocument]:
+        """Documents needing content: never-fetched first (newest first), then re-reads. Optionally only those
+        with the given canonical ids."""
+        wanted = list(canonical_ids or ())
+        only = f"AND canonical_id IN ({','.join('?' * len(wanted))}) " if wanted else ""
         rows = self.db.execute(
             "SELECT * FROM source_documents WHERE source = ? AND content_status = 'pending' "
-            "AND missing_since IS NULL "
+            f"AND missing_since IS NULL {only}"
             "ORDER BY content_fetched_at IS NOT NULL, published IS NULL, published DESC, source_id",
-            (source,),
+            (source, *wanted),
         ).fetchall()
         return [self.to_document(r) for r in rows]
 
@@ -385,13 +396,23 @@ class Store:
         ).fetchone()[0]
 
     def latest_snapshots(self, source: str, source_id: str) -> list[tuple[str, bytes]]:
-        """The raw payloads of the most recent fetch, as ``(kind, bytes)``."""
+        """The raw payloads of the most recent content fetch, as ``(kind, bytes)``.
+
+        Keyed by the fetch's own time, so pages saved since (catalogue entries) don't hide them.
+        """
+        return [(kind, self.blobs.get(sha)) for kind, sha, _media in self._content_snapshots(source, source_id)]
+
+    def content_files(self, source: str, source_id: str, prefix: str) -> list[tuple[str, str, str]]:
+        """``(kind, sha256, media_type)`` of the latest content fetch's snapshots whose kind starts with ``prefix``."""
+        return [row for row in self._content_snapshots(source, source_id) if row[0].startswith(prefix)]
+
+    def _content_snapshots(self, source: str, source_id: str) -> list[tuple[str, str, str]]:
         rows = self.db.execute(
-            "SELECT kind, blob_sha256 FROM snapshots WHERE source = ? AND source_id = ? AND fetched_at = "
-            "(SELECT MAX(fetched_at) FROM snapshots WHERE source = ? AND source_id = ?) ORDER BY rowid",
+            "SELECT kind, blob_sha256, media_type FROM snapshots WHERE source = ? AND source_id = ? AND fetched_at = "
+            "(SELECT content_fetched_at FROM source_documents WHERE source = ? AND source_id = ?) ORDER BY rowid",
             (source, source_id, source, source_id),
         ).fetchall()
-        return [(r["kind"], self.blobs.get(r["blob_sha256"])) for r in rows]
+        return [(r["kind"], r["blob_sha256"], r["media_type"]) for r in rows]
 
     def save_content(
         self,
@@ -550,6 +571,59 @@ class Store:
         ).fetchall()
         return {r["source_id"]: r["canonical_id"] for r in rows}
 
+    # --- catalogue entries -------------------------------------------------
+
+    def entry_queue(self, source: str, limit: int) -> list[DiscoveredDocument]:
+        """Never read first (newest first), then least recently read. Duplicates too: an entry is about the
+        document, whichever record supplied its text."""
+        rows = self.db.execute(
+            "SELECT * FROM source_documents WHERE source = ? AND missing_since IS NULL "
+            "ORDER BY entry_read_at IS NOT NULL, entry_read_at, published IS NULL, published DESC, source_id "
+            "LIMIT ?", (source, limit),
+        ).fetchall()
+        return [self.to_document(r) for r in rows]
+
+    def save_entry(self, doc: DiscoveredDocument, entry: CatalogEntry, *, rebuilt: bool = False) -> CatalogEntry | None:
+        """Store an entry; returns the previous one when what it says changed (None when unchanged or first).
+
+        The raw page is kept only when the entry changed: pages carry view counters, so their bytes
+        differ on every read. A rebuilt entry (re-parsed from a stored page) keeps its read time and page.
+        """
+        now = utcnow()
+        if rebuilt:
+            entry = replace(entry, snapshot=None)
+        with self.db:
+            row = self.row(doc.source, doc.source_id)
+            previous = row["entry_fingerprint"] if row else None
+            if previous != entry.fingerprint and entry.snapshot is not None:
+                snapshot = entry.snapshot
+                self.db.execute(
+                    "INSERT INTO snapshots (source, source_id, kind, media_type, blob_sha256, fetched_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (doc.source, doc.source_id, snapshot.kind, snapshot.media_type,
+                     self.blobs.put(snapshot.content), now),
+                )
+            self.db.execute(
+                "UPDATE source_documents SET entry_json = ?, entry_fingerprint = ?, entry_read_at = ? "
+                "WHERE source = ? AND source_id = ?",
+                (canonical_json(entry.facts()), entry.fingerprint, row["entry_read_at"] if rebuilt else now,
+                 doc.source, doc.source_id),
+            )
+        if previous is None or previous == entry.fingerprint:
+            return None
+        return CatalogEntry.from_facts(json.loads(row["entry_json"]))
+
+    def latest_entry_page(self, source: str, source_id: str) -> bytes | None:
+        row = self.db.execute(
+            "SELECT blob_sha256 FROM snapshots WHERE source = ? AND source_id = ? AND kind LIKE 'entry%' "
+            "ORDER BY fetched_at DESC, rowid DESC LIMIT 1", (source, source_id),
+        ).fetchone()
+        return self.blobs.get(row["blob_sha256"]) if row else None
+
+    @staticmethod
+    def entry_of(row: Mapping[str, Any]) -> CatalogEntry | None:
+        return CatalogEntry.from_facts(json.loads(row["entry_json"])) if row["entry_json"] else None
+
     # --- events ------------------------------------------------------------
 
     def record_event(
@@ -663,6 +737,8 @@ class Store:
                 "SELECT COUNT(*) FROM source_documents WHERE missing_since IS NOT NULL").fetchone()[0],
             "status_checked": self.db.execute(
                 "SELECT COUNT(*) FROM source_documents WHERE status_checked_at IS NOT NULL").fetchone()[0],
+            "entries_read": grouped(
+                "SELECT source, COUNT(*) AS n FROM source_documents WHERE entry_read_at IS NOT NULL GROUP BY source"),
         }
 
     def review_items(self) -> dict[str, list[dict[str, Any]]]:
@@ -686,6 +762,9 @@ class Store:
             "text_incomplete": rows(
                 "SELECT d.source, d.source_id, d.canonical_id, d.title, t.language, t.origin, t.chars "
                 "FROM texts t JOIN source_documents d USING (source, source_id) WHERE t.complete = 0"),
+            "files_missing": rows(
+                f"{base}, json_extract(content_extra_json, '$.files_missing') AS files_missing FROM source_documents "
+                "WHERE json_array_length(content_extra_json, '$.files_missing') > 0"),
         }
 
     # --- runs --------------------------------------------------------------

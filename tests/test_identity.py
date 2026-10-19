@@ -305,3 +305,88 @@ def test_older_header_variants(text: str, expected: str) -> None:
 )
 def test_annex_first_texts_stay_unknown(text: str) -> None:
     assert identity.assess_text(text) == "unknown"
+
+
+# --- JDIH OJK's Indonesian titles (real, listed 2026-10-16), typos included.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Peraturan Otoritas Jasa Keuangan Republik Indonesia Nomor 9 Tahun 2024 tentang Penerapan Tata Kelola bagi Bank Perekonomian Rakyat", ("pojk", 9, 2024)),
+        ("Peraturan Anggota Dewan Komisioner Otoritas Jasa Keuangan Republik Indonesia Nomor 1 Tahun 2026 Tentang Penyelenggaraan Teknologi Informasi Oleh Bank Umum", ("padk", 1, 2026)),
+        ("Surat Edaran Otoritas Jasa Keuangan Republik Indonesia Nomor 9/SEOJK.03/2015 tentang Pedoman Akuntansi Perbankan Syariah Indonesia", ("seojk", 9, 2015)),
+        ("Peraturan Otoritas Jasa Keuangan Republik Indonesia Nomor34/POJK.05/2015 tentang Perizinan Usaha dan Kelembagaan Perusahaan Modal Ventura", ("pojk", 34, 2015)),
+        ("Peraturan Otoritas Jasa Keuangan Republik Indonesia Nomor 28/POJK,05/2014 tentang Perizinan Usaha dan Kelembagaan Perusahaan Pembiayaan", ("pojk", 28, 2014)),
+        ("Peraturan Otoritas Jasa Keuangan Republik Indonesia Nomor 12/POJK.05.2014 tentang Perizinan Usaha dan Kelembagaan Lembaga Keuangan Mikro", ("pojk", 12, 2014)),
+        # An amendment names itself first, then the regulation it amends.
+        ("Peraturan Otoritas Jasa Keuangan Republik Indonesia Nomor 1 Tahun 2023 Tentang Perubahan Atas Peraturan Otoritas Jasa Keuangan Nomor 5/POJK.05/2013 Tentang Pengawasan Badan Penyelenggara Jaminan Sosial", ("pojk", 1, 2023)),
+    ],
+)
+def test_jdih_title(title: str, expected: tuple[str, int, int]) -> None:
+    c = _from_title(title)
+    assert c is not None and (c.family, c.number, c.year) == expected
+
+
+def test_a_national_regulation_title_is_not_an_ojk_id() -> None:
+    assert _from_title("Peraturan Pemerintah Nomor 11 Tahun 2014 tentang Pungutan oleh Otoritas Jasa Keuangan") is None
+
+
+@pytest.mark.parametrize(
+    ("citation", "expected"),
+    [
+        ("POJK Nomor 20/POJK.03/2014", "ojk:pojk:2014:20"),
+        ("SEOJK 16/SEOJK.03/2015", "ojk:seojk:2015:16"),
+        ("POJK Nomor 7 Tahun 2024", "ojk:pojk:2024:7"),
+        ("Peraturan OJK Nomor 2 Tahun 2022", "ojk:pojk:2022:2"),
+        ("SEOJK Nomor 41 Tahun 2017", "ojk:seojk:2017:41"),
+        ("Peraturan Otoritas Jasa Keuangan Republik Indonesia Nomor 40 Tahun 2024 tentang Layanan Pendanaan Bersama", "ojk:pojk:2024:40"),
+        ("PBI Nomor 10/9/PBI/2008", None),
+        ("Surat Edaran Bank Indonesia Nomor 12/36/DPNP", None),
+        ("UU Nomor 21 Tahun 2011 tentang Otoritas Jasa Keuangan", None),
+    ],
+)
+def test_cited_id(citation: str, expected: str | None) -> None:
+    found = identity.cited_id(citation)
+    assert (str(found) if found else None) == expected
+
+
+def test_title_subject() -> None:
+    assert identity.title_subject(
+        "Peraturan Otoritas Jasa Keuangan Republik Indonesia Nomor 8 Tahun 2026 tentang Pelaporan dan Permintaan Data"
+    ) == "Pelaporan dan Permintaan Data"
+    assert identity.title_subject("Peraturan OJK Nomor 8 Tahun 2026") is None
+
+
+@pytest.mark.parametrize(
+    ("header", "subject"),
+    [
+        # Real circular headers (RegAlert texts): the body opens in prose, which never belongs to the subject.
+        ("SURAT EDARAN OTORITAS JASA KEUANGAN\nNOMOR 2 /SEOJK.05/2016\nTENTANG\nTINGKAT KESEHATAN KEUANGAN PEMBIAYAAN "
+         "SYARIAH\nSesuai dengan amanat ketentuan Pasal 20 ayat (4)", "TINGKAT KESEHATAN KEUANGAN PEMBIAYAAN SYARIAH"),
+        ("SURAT EDARAN OTORITAS JASA KEUANGAN\nNOMOR 8 /SEOJK.04/2020\nTENTANG\nKONTRIBUSI DANA JAMINAN BERDASARKAN NILAI "
+         "TRANSAKSI\nUntuk memberikan insentif dalam kerangka", "KONTRIBUSI DANA JAMINAN BERDASARKAN NILAI TRANSAKSI"),
+        ("NOMOR 5/SEOJK.03/2016 TENTANG PENERAPAN TATA KELOLA BAGI BANK PERKREDITAN RAKYAT Untuk meningkatkan efisiensi "
+         "dan efektivitas dalam pemantauan", "PENERAPAN TATA KELOLA BAGI BANK PERKREDITAN RAKYAT"),
+        ("PERATURAN OTORITAS JASA KEUANGAN\nNOMOR 1 TAHUN 2026\nTENTANG\nPENGGUNAAN TENAGA KERJA ASING\nDENGAN RAHMAT "
+         "TUHAN YANG MAHA ESA", "PENGGUNAAN TENAGA KERJA ASING"),
+        # Any opener ends it: the subject is in capitals, the body is not (real headers, published until 2026-10-16).
+        ("NOMOR 1/SEOJK.04/2015\nTENTANG\nPROSEDUR PENYELESAIAN KESALAHAN PENGHITUNGAN NILAI AKTIVA BERSIH REKSA DANA\n"
+         "Penghitungan Nilai Aktiva Bersih Reksa Dana sebagaimana dimaksud",
+         "PROSEDUR PENYELESAIAN KESALAHAN PENGHITUNGAN NILAI AKTIVA BERSIH REKSA DANA"),
+        ("TENTANG\nPENERAPAN TATA KELOLA BAGI BANK PEMBIAYAAN RAKYAT SYARIAH\nBerdasarkan Pasal 94 POJK",
+         "PENERAPAN TATA KELOLA BAGI BANK PEMBIAYAAN RAKYAT SYARIAH"),
+    ],
+)
+def test_indonesian_subject(header: str, subject: str) -> None:
+    assert identity.indonesian_subject(header) == subject
+
+
+def jdih_doc(title: str, number: str) -> DiscoveredDocument:
+    return DiscoveredDocument(source="jdih_ojk", source_id="g", title=title, published=None, source_url=None,
+                              official_url=None, metadata={"number": number})
+
+
+def test_the_catalogues_own_number_confirms_its_title() -> None:
+    title = "Surat Edaran Otoritas Jasa Keuangan Republik Indonesia Nomor 16/SEOJK.04/2016 tentang Pengakuan"
+    confirmed = identity.resolve_id(jdih_doc(title, "16"))
+    assert (str(confirmed.id), confirmed.confidence) == ("ojk:seojk:2016:16", "high")
+    assert identity.resolve_id(jdih_doc(title, "61")).confidence == "medium"  # disagreeing columns prove nothing

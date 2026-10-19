@@ -1,7 +1,7 @@
 """The port every OJK document source implements.
 
 A source knows *where* OJK documents come from and how to talk to that place
-(RegAlert today; ojk.go.id or JDIH OJK later, as a fallback). It knows nothing about
+(JDIH OJK, OJK's own legal database; RegAlert until 2026-10-16). It knows nothing about
 storage, canonical identity or other sources: it turns listings and payloads into
 the records in ``models``.
 """
@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ojk_connector.models import DiscoveredDocument, DocumentContent, StatusCheck
+from ojk_connector.models import CatalogEntry, DiscoveredDocument, DocumentContent, StatusCheck
 
 #: Incremental discovery re-lists this many days before the last run, because sources
 #: may date documents late (e.g. by when they ingested them). Setting: ``lookback_days``.
@@ -61,6 +61,8 @@ class Source(ABC):
     monitored_fields: ClassVar[tuple[str, ...]] = ()
     #: Whether ``check_status`` is implemented (cheap standing checks for change detection).
     supports_status_checks: ClassVar[bool] = False
+    #: Whether ``read_entry`` is implemented (the document's full catalogue entry, without its files).
+    supports_entries: ClassVar[bool] = False
 
     def __init__(self, settings: Mapping[str, Any], context: SourceContext) -> None:
         self.settings = settings
@@ -95,6 +97,18 @@ class Source(ABC):
     def check_status(self, document: DiscoveredDocument) -> StatusCheck:
         """Report what amends or replaces the document. Must not consume rationed reads."""
         raise NotImplementedError(f"source {self.name!r} has no status checks")
+
+    def read_entry(self, document: DiscoveredDocument) -> CatalogEntry:
+        """Read the document's full catalogue entry: official title, dates, standing, relations, file list.
+
+        Cheap (one page, no files), so it runs for every listed document, including those whose content
+        another source already supplied.
+        """
+        raise NotImplementedError(f"source {self.name!r} has no catalogue entries")
+
+    def rebuild_entry(self, document: DiscoveredDocument, page: bytes) -> CatalogEntry:
+        """Re-parse a stored entry page, without network, so parser fixes reach every entry already read."""
+        raise NotImplementedError(f"source {self.name!r} cannot rebuild catalogue entries")
 
     # Optional: sources that need sign-in override these.
     @classmethod

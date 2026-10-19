@@ -36,6 +36,7 @@ class MonitoringConfig:
     content_failure_rate: float = 0.2
     renotify_hours: float = 24.0  # reminders for conditions that stay open
     status_checks_per_run: int = 100  # standing checks (free) per source per run
+    entry_reads_per_run: int = 100  # catalogue entries (one page each, no files) per source per run
     dedup_title_overlap: float = 0.8
     notify: tuple[Mapping[str, Any], ...] = ()  # [[monitoring.notify]] channels
 

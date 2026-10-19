@@ -8,19 +8,30 @@ credentials_dir = "~/.config/ojk-connector/credentials"   # tokens live outside 
 # contact = "mailto:you@example.com"                  # optional: added to the User-Agent
 
 # --- Sources: where OJK documents come from -----------------------------------
-# One table per source, primary first. Today: RegAlert. Planned fallback: the official
-# files on ojk.go.id (a second [sources.*] table once that Source exists).
+# One table per source, primary first.
 
-[sources.regalert]
-base_url = "https://mcp.regalert.today"
+# JDIH OJK (jdih.ojk.go.id): OJK's own legal database. Primary since 2026-10-16.
+# Discovery lists the whole catalogue (20 requests); catalogue entries (dates, standing, history)
+# are read for every listed document; content (official files + extracted text) only for documents
+# no other record holds yet.
+[sources.jdih_ojk]
 requests_per_second = 1.0
-lookback_days = 45                  # RegAlert sometimes dates documents by when it ingested them
-max_content_reads_per_run = 25      # full-text reads are rationed by fair use; the queue resumes next run
+max_content_reads_per_run = 25     # documents whose files are downloaded and read per run
 max_attempts = 3
-original_text_rights = "public"     # the regulation's own text: a public instrument
-translation_rights = "restricted"   # RegAlert's English translation: kept local, not exported, until licensed
-max_charge_usd_per_read = 0.0       # stop reading if RegAlert ever charges for a read
-# token_env = "REGALERT_ACCESS_TOKEN"   # optional: read a bearer token from this env var instead
+
+# RegAlert: retired 2026-10-16 (our account was banned; never work around a refusal). Its 977 stored
+# records, texts and lineage stay in data/ and keep exporting; only new reads stopped. The source code
+# is kept so `reparse` and `auth` still work if access is ever restored:
+#
+# [sources.regalert]
+# base_url = "https://mcp.regalert.today"
+# requests_per_second = 1.0
+# lookback_days = 45
+# max_content_reads_per_run = 25
+# max_attempts = 3
+# original_text_rights = "public"
+# translation_rights = "restricted"
+# max_charge_usd_per_read = 0.0
 
 # --- Monitoring: alerts, change detection, health ----------------------------
 # Every run writes data/reports/latest.{json,md} and appends notifications to data/alerts.jsonl.
@@ -33,6 +44,7 @@ fill_rate_drop_points = 20       # warning when a field is filled 20 points less
 content_failure_rate = 0.2       # error when more than 20% of a run's reads fail
 renotify_hours = 24              # reminder interval for alerts that stay open
 status_checks_per_run = 100      # free "was it amended/replaced?" checks per source per run
+entry_reads_per_run = 100        # catalogue entries (one page each, no files) per source per run
 dedup_title_overlap = 0.8        # how alike two titles must be to treat records as the same document
 
 # Notification channels (any number). Secrets come from environment variables.

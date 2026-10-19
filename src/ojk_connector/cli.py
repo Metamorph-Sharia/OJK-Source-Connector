@@ -57,10 +57,15 @@ def _parser() -> argparse.ArgumentParser:
     fetch = sub.add_parser("fetch", help="fetch content for queued documents, paced")
     fetch.add_argument("--source", action="append")
     fetch.add_argument("--max-reads", type=int)
+    fetch.add_argument("--document", action="append", help="only this canonical id, e.g. ojk:pojk:2025:25 (repeatable)")
 
     status = sub.add_parser("check-status", help="check whether stored regulations were amended or replaced")
     status.add_argument("--source", action="append")
     status.add_argument("--budget", type=int, help="documents to check per source (default: from config)")
+
+    entries = sub.add_parser("entries", help="read catalogue entries: official dates, standing, history; no files")
+    entries.add_argument("--source", action="append")
+    entries.add_argument("--budget", type=int, help="entries to read per source (default: from config)")
 
     sub.add_parser("dedupe", help="recompute duplicate and id-collision decisions")
     sub.add_parser("reparse", help="re-derive ids and text checks from stored data (after rule changes); no network")
@@ -94,6 +99,8 @@ def _run_summary(report: dict[str, Any]) -> dict[str, Any]:
                                        "pause_reason", "error")} for c in report["content"]],
         "status_checks": [{k: s[k] for k in ("source", "checked", "baselined", "failed")} |
                           {"changed": len(s["changed"])} for s in report["status_checks"]],
+        "entries": [{k: e[k] for k in ("source", "read", "first_reads", "failed", "error")} |
+                    {"changed": len(e["changed"])} for e in report["entries"]],
         "dedup": {k: report["dedup"][k] for k in ("duplicates", "collisions")},
         "export": report["export"],
         "report": "data/reports/latest.md",
@@ -146,13 +153,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print([asdict(r) for r in results])
             return EXIT_PROBLEMS if any(r.error for r in results) else EXIT_OK
         if args.command == "fetch":
-            fetched = pipeline.fetch_content(sources=args.source, max_reads=args.max_reads)
+            fetched = pipeline.fetch_content(sources=args.source, max_reads=args.max_reads, documents=args.document)
             _print([asdict(r) for r in fetched])
             return EXIT_PROBLEMS if any(r.error for r in fetched) else EXIT_OK
         if args.command == "check-status":
             checked = pipeline.check_status(sources=args.source, budget=args.budget)
             _print([asdict(s) for s in checked])
             return EXIT_PROBLEMS if any(s.error for s in checked) else EXIT_OK
+        if args.command == "entries":
+            read = pipeline.read_entries(sources=args.source, budget=args.budget)
+            _print([asdict(e) for e in read])
+            return EXIT_PROBLEMS if any(e.error for e in read) else EXIT_OK
         if args.command == "dedupe":
             _print(pipeline.dedupe().as_dict())
             return EXIT_OK

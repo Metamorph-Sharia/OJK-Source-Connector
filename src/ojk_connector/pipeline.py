@@ -1,6 +1,6 @@
 """The OJK ingestion pipeline, for every source in config:
 
-    discover → fetch content (paced) → check standing → deduplicate → export → alerts
+    discover → fetch content (paced) → check standing → read catalogue entries → deduplicate → export → alerts
 
 Every stage records *events* (new document, metadata changed, text changed, amended,
 missing from source, duplicate, …) and the run report feeds the alert rules. The
@@ -22,7 +22,7 @@ from ojk_connector.config import Config
 from ojk_connector.dedup import DedupOutcome, find_fetched_duplicate, resolve_duplicates
 from ojk_connector.export import ExportStats, export_corpus
 from ojk_connector.identity import PRIMARY_LANGUAGE, IdResolution
-from ojk_connector.models import DiscoveredDocument, DocumentContent, Origin
+from ojk_connector.models import CatalogEntry, DiscoveredDocument, DocumentContent, Origin
 from ojk_connector.monitoring import AlertManager, Notifier, build_notifiers, evaluate, severity_rank
 from ojk_connector.monitoring.summary import render_summary
 from ojk_connector.sources import (
@@ -118,6 +118,20 @@ class StatusStats:
     failed: int = 0
     changed: list[dict[str, Any]] = field(default_factory=list)
     paused: bool = False
+    error: str | None = None
+    error_kind: str | None = None
+    partial: bool = True  # False once the stage finished for this source
+
+
+@dataclass
+class EntryStats:
+    source: str
+    budget: int
+    read: int = 0
+    first_reads: int = 0
+    failed: int = 0
+    changed: list[dict[str, Any]] = field(default_factory=list)
+    unknown_wording: list[dict[str, Any]] = field(default_factory=list)  # standing or history JDIH words differently
     error: str | None = None
     error_kind: str | None = None
     partial: bool = True  # False once the stage finished for this source
@@ -278,7 +292,10 @@ class Pipeline:
 
     # --- fetch content -------------------------------------------------------------
 
-    def fetch_content(self, *, sources: Iterable[str] | None = None, max_reads: int | None = None) -> list[FetchStats]:
+    def fetch_content(self, *, sources: Iterable[str] | None = None, max_reads: int | None = None,
+                      documents: Iterable[str] | None = None) -> list[FetchStats]:
+        """``documents``: read only these canonical ids (e.g. to fix known bad texts first)."""
+        documents = list(documents or ())
         results = []
         for source_name in self._sources_in_use(sources):
             settings = self.config.sources[source_name].settings
@@ -288,7 +305,7 @@ class Pipeline:
             if self._skip_refused(source_name, stats):
                 results.append(stats)
                 continue
-            self._fetch_source(source_name, int(settings.get("max_attempts", DEFAULT_MAX_ATTEMPTS)), stats)
+            self._fetch_source(source_name, int(settings.get("max_attempts", DEFAULT_MAX_ATTEMPTS)), stats, documents)
             stats.remaining = self.store.count_pending(source_name)
             stats.partial = False
             log.info("content from %s: %s fetched (%s re-reads), %s failed, %s duplicates skipped, %s queued%s",
@@ -297,9 +314,9 @@ class Pipeline:
             results.append(stats)
         return results
 
-    def _fetch_source(self, source_name: str, max_attempts: int, stats: FetchStats) -> None:
+    def _fetch_source(self, source_name: str, max_attempts: int, stats: FetchStats, documents: list[str]) -> None:
         threshold = self.config.monitoring.dedup_title_overlap
-        for doc in self.store.pending_content(source_name):
+        for doc in self.store.pending_content(source_name, documents):
             if stats.attempted >= stats.limit:
                 return
             if duplicate := find_fetched_duplicate(self.store, doc, threshold):
@@ -454,6 +471,58 @@ class Pipeline:
         self._event("status_changed", "info", verbs, row=row, details={"summary": summary, "added": added,
                                                                        "removed": removed})
 
+    # --- catalogue entries -----------------------------------------------------------
+
+    def read_entries(self, *, sources: Iterable[str] | None = None, budget: int | None = None) -> list[EntryStats]:
+        results = []
+        for source_name in self._sources_in_use(sources):
+            source = self.source(source_name)
+            if not source.supports_entries:
+                continue
+            stats = EntryStats(source_name, budget if budget is not None else self.config.monitoring.entry_reads_per_run)
+            self._track("entries", stats)
+            if not self._skip_refused(source_name, stats):
+                self._read_entries(source, stats)
+            stats.partial = False
+            log.info("catalogue entries read from %s: %s (%s first reads, %s changed, %s failed)",
+                     source_name, stats.read, stats.first_reads, len(stats.changed), stats.failed)
+            results.append(stats)
+        return results
+
+    def _read_entries(self, source: Source, stats: EntryStats) -> None:
+        for doc in self.store.entry_queue(source.name, stats.budget):
+            try:
+                entry = source.read_entry(doc)
+            except (SourceAuthError, SourceForbidden) as e:
+                stats.error, stats.error_kind = f"{type(e).__name__}: {e}", _error_kind(e)
+                if isinstance(e, SourceForbidden):
+                    self._refused[source.name] = str(e)
+                return
+            except SourceError as e:
+                stats.failed += 1
+                log.warning("catalogue entry for %s failed: %s", doc_key(source.name, doc.source_id), e)
+                continue
+            first = self.store.row(doc.source, doc.source_id)["entry_read_at"] is None
+            previous = self.store.save_entry(doc, entry)
+            stats.read += 1
+            stats.first_reads += first
+            if stats.read % PROGRESS_EVERY == 0:
+                log.info("catalogue entries from %s: %s/%s", source.name, stats.read, stats.budget)
+            if previous is not None:
+                self._record_entry_change(doc, previous, entry, stats)
+            if entry.standing is None and len(stats.unknown_wording) < MAX_LISTED:
+                stats.unknown_wording.append(_brief(doc, status=entry.fields.get("Status Peraturan")))
+
+    def _record_entry_change(self, doc: DiscoveredDocument, before: CatalogEntry, after: CatalogEntry,
+                             stats: EntryStats) -> None:
+        changed = sorted(k for k, v in after.facts().items() if before.facts().get(k) != v)
+        details = {"changed": changed, "standing": [before.standing, after.standing]}
+        row = self.store.row(doc.source, doc.source_id)
+        stats.changed.append(_brief(row, **details))
+        severity = "info" if before.standing == after.standing else "warning"
+        self._event("entry_changed", severity, f"catalogue entry changed: {', '.join(changed)}", row=row,
+                    details=details)
+
     # --- dedupe, reparse, export -------------------------------------------------------
 
     def dedupe(self) -> DedupOutcome:
@@ -470,9 +539,11 @@ class Pipeline:
         """Apply parser and rule changes to everything stored, without network:
 
         1. rebuild texts from raw snapshots (sources that support it),
-        2. re-assess texts and re-derive canonical ids.
+        2. re-parse catalogue entries from their stored pages,
+        3. re-assess texts and re-derive canonical ids.
         """
-        counts = {"documents": 0, "texts_rebuilt": 0, "texts_changed": 0, "ids_changed": 0, "from_text": 0}
+        counts = {"documents": 0, "texts_rebuilt": 0, "texts_changed": 0, "ids_changed": 0, "from_text": 0,
+                  "entries_rebuilt": 0, "entries_changed": 0}
         for row in list(self.store.iter_documents()):
             counts["documents"] += 1
             doc = Store.to_document(row)
@@ -491,6 +562,7 @@ class Pipeline:
                     if result.changed_texts:
                         self._event("content_changed", "info", "text re-assembled from stored snapshots",
                                     row=row, details={"texts": result.changed_texts, "rebuilt": True})
+            self._rebuild_entry(row, doc, counts)
             resolution, origin = None, "metadata"
             for text in self.store.texts_for(row["source"], row["source_id"]):
                 if text.origin == Origin.SOURCE_TRANSLATION:
@@ -512,6 +584,20 @@ class Pipeline:
                 self._event("id_changed", "info", f"canonical id {old} → {new} (re-parse)", row=self.store.row(
                     row["source"], row["source_id"]), details={"old": old, "new": new, "evidence": resolution.evidence})
         return counts
+
+    def _rebuild_entry(self, row: Mapping[str, Any], doc: DiscoveredDocument, counts: dict[str, int]) -> None:
+        if not row["entry_read_at"] or row["source"] not in self.config.sources:
+            return
+        page = self.store.latest_entry_page(row["source"], row["source_id"])
+        if page is None:
+            return
+        try:
+            entry = self.source(row["source"]).rebuild_entry(doc, page)
+        except (NotImplementedError, SourceError):
+            return
+        counts["entries_rebuilt"] += 1
+        counts["entries_changed"] += row["entry_fingerprint"] != entry.fingerprint
+        self.store.save_entry(doc, entry, rebuilt=True)
 
     def export(self) -> ExportStats:
         stats = export_corpus(self.store, self.config.data_dir / "corpus")
@@ -540,6 +626,8 @@ class Pipeline:
             report["stages_completed"].append("fetch_content")
             self.check_status(sources=sources)
             report["stages_completed"].append("check_status")
+            self.read_entries(sources=sources)
+            report["stages_completed"].append("read_entries")
             report["dedup"] = self.dedupe().as_dict()
             report["stages_completed"].append("dedupe")
             report["export"] = self.export().as_dict() if export else None
@@ -563,13 +651,13 @@ class Pipeline:
 
     @staticmethod
     def _current_stage(report: dict[str, Any]) -> str:
-        order = ["discover", "fetch_content", "check_status", "dedupe", "export"]
+        order = ["discover", "fetch_content", "check_status", "read_entries", "dedupe", "export"]
         done = report["stages_completed"]
         return next((s for s in order if s not in done), "reporting")
 
     def _finish_run(self, report: dict[str, Any], forced_status: str | None = None) -> dict[str, Any]:
         run_id = report["run_id"]
-        for section in ("discovery", "content", "status_checks"):
+        for section in ("discovery", "content", "status_checks", "entries"):
             report[section] = [asdict(s) for s in (self._progress or {}).get(section, [])]
         evaluation = evaluate(report, self.config.monitoring)
         if forced_status:

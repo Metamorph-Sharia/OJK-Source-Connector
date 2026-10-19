@@ -19,7 +19,7 @@ Pure rules: no I/O, no knowledge of where a document came from.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 from urllib.parse import unquote, urlsplit
 
@@ -169,36 +169,56 @@ def _from_slug(url: str | None) -> _Candidate | None:
     return None
 
 
-# --- English title (RegAlert): "… Number 77/POJK.01/2016 …", "… No. 3 of 2026 …"
+# --- title: English (RegAlert) "… Number 77/POJK.01/2016 …", "… No. 3 of 2026 …";
+#     Indonesian (JDIH OJK) "Peraturan Otoritas Jasa Keuangan … Nomor 9 Tahun 2024 tentang …".
 # A citation preceded by these words names the instrument being amended or revoked,
 # e.g. "POJK on Amendment to … Regulation Number 11/POJK.03/2016 …".
 _AMENDING_WORDS = re.compile(r"\b(?:amend\w*|chang\w*|revo\w*|repeal\w*|perubahan|pencabutan)\b", re.I)
-_TITLE_OLD = re.compile(rf"\b{_NUM}\s*[/.]\s*{_FAM}\s*\.?\s*\d{{2}}\s*[/.]\s*{_YEAR}\b", re.I)
+# JDIH's typos are tolerated: "Nomor34/POJK.05/2015", "28/POJK,05/2014", "12/POJK.05.2014".
+_TITLE_OLD = re.compile(rf"(?<!\d){_NUM}\s*[/.]\s*{_FAM}\s*[.,]?\s*\d{{2}}\s*[/.]\s*{_YEAR}\b", re.I)
 _TITLE_NEW = re.compile(rf"\b(?:Number|No\.?|Nomor)\s*{_NUM}\s+(?:of|Year|Tahun)\s+{_YEAR}\b", re.I)
 
 
 def _title_family(prefix: str) -> str | None:
-    if re.search(r"board of commissioners|commissioner|\bPADK\b", prefix, re.I):
+    if re.search(r"board of commissioners|commissioner|anggota dewan komisioner|\bPADK\b", prefix, re.I):
         return "padk"
-    if re.search(r"circular|\bSEOJK\b", prefix, re.I):
+    if re.search(r"circular|surat edaran (?:otoritas jasa keuangan|OJK)|\bSEOJK\b", prefix, re.I):
         return "seojk"
-    if re.search(r"regulation|\bPOJK\b", prefix, re.I):
+    if re.search(r"regulation|peraturan (?:otoritas jasa keuangan|OJK)|\bPOJK\b", prefix, re.I):
         return "pojk"
     return None
 
 
-def _from_title(title: str | None) -> _Candidate | None:
-    if not title:
-        return None
+def _first_citation(title: str) -> tuple[_Candidate | None, int] | None:
+    """The first OJK citation in a title, and where it starts. The candidate is None when its family is unknown."""
     old = _TITLE_OLD.search(title)
     new = _TITLE_NEW.search(title)
     first = old if old and (not new or old.start() <= new.start()) else new
-    if first is None or _AMENDING_WORDS.search(title[: first.start()]):
-        return None  # the first citation is the instrument being amended, not this one
+    if first is None:
+        return None
     if first is old:
-        return _candidate(old, "title", "medium")
+        return _candidate(old, "title", "medium"), first.start()
     family = _title_family(title[: first.start()])
-    return _candidate(first, "title", "medium", family=family) if family else None
+    return (_candidate(first, "title", "medium", family=family) if family else None), first.start()
+
+
+def _from_title(title: str | None) -> _Candidate | None:
+    found = _first_citation(title) if title else None
+    if found is None or _AMENDING_WORDS.search(title[: found[1]]):
+        return None  # none, or the first citation is the instrument being amended, not this one
+    return found[0]
+
+
+def cited_id(citation: str) -> CanonicalId | None:
+    """The OJK instrument a citation names, e.g. "POJK Nomor 7 Tahun 2024", "SEOJK 16/SEOJK.03/2015".
+
+    None for anything else (BI rules, laws), and when the family can't be told.
+    """
+    found = _first_citation(citation)
+    candidate = found[0] if found else None
+    if candidate is None or candidate.family is None:
+        return None
+    return CanonicalId(candidate.family, candidate.year, candidate.number)
 
 
 # --- RegAlert instrument_no: "ojk:pojk.05-regulation:46:2024", "ojk:regulation:11:2026"
@@ -239,6 +259,31 @@ _HEADERS = (
 _HEADER_WINDOW = 3000  # the header is near the top (after "SALINAN" or a letter's addressee)
 _LOOSE_HEADER_WINDOW = 400  # for texts with odd casing, only a header at the very start counts
 
+# --- what a regulation is about: its own header ("TENTANG …"), or an Indonesian title ("… tentang …")
+# The subject is set in capitals; it ends at the first word that isn't (circulars open in prose: "Sesuai
+# dengan amanat …", "Berdasarkan Pasal 94 …"), or at a regulation's capitalised opening ("DENGAN RAHMAT …").
+_SUBJECT = re.compile(
+    r"\bTENTANG\s+(?P<subject>(?:[^\sa-z]+\s+)+?)(?=DENGAN RAHMAT|MEMUTUSKAN|MENIMBANG|\S*[a-z])", re.S
+)
+
+
+def indonesian_subject(text: str) -> str | None:
+    """The "TENTANG …" subject from a regulation's own header, whitespace collapsed."""
+    found = _SUBJECT.search(text[:_HEADER_WINDOW])
+    return " ".join(found["subject"].split()).rstrip(".") if found else None
+
+
+_TITLE_SUBJECT = re.compile(r"\btentang\s+(?P<subject>.+)$", re.I | re.S)
+
+
+def title_subject(title: str | None) -> str | None:
+    """The subject of an Indonesian title: "… Nomor 8 Tahun 2026 tentang Pelaporan …" → "Pelaporan …"."""
+    found = _TITLE_SUBJECT.search(title or "")
+    if found is None:
+        return None
+    return " ".join(found["subject"].split()).rstrip(".") or None
+
+
 # --- an ojk.go.id regulation page captured as text (a summary page, not the instrument):
 #     "Jenis Regulasi : Surat Edaran OJK  Nomor Regulasi : 8/SEOJK.04/2023"
 _PAGE = re.compile(r"Jenis Regulasi\s*:\s*(?P<jenis>.+?)\s+Nomor Regulasi\s*:\s*(?P<nomor>\S+(?:\s+Tahun\s+\d{4})?)", re.I)
@@ -277,12 +322,21 @@ def resolve_id(document: DiscoveredDocument) -> IdResolution:
         for c in (
             _from_identifier(meta.get("identifier")),
             _from_slug(document.official_url),
-            _from_title(document.title),
+            _confirmed_by_number(_from_title(document.title), meta.get("number")),
             _from_instrument(meta.get("instrument_no")),
         )
         if c is not None
     ]
     return _decide(candidates)
+
+
+def _confirmed_by_number(title: _Candidate | None, number: object) -> _Candidate | None:
+    """A catalogue's own number column (JDIH OJK's "number") agreeing with its title: two fields of the issuer's
+    record, so a text header that disagrees is a conflict for a person, not a new id (SEOJK 16/2016's header
+    reads "NOMOR.116"; JDIH serves POJK 14/2020 as the file of POJK 14/2016)."""
+    if title is None or not isinstance(number, str) or number.strip() != str(title.number):
+        return title
+    return replace(title, field="title+number", confidence="high")
 
 
 def resolve_id_from_text(text: str) -> IdResolution:

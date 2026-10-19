@@ -62,6 +62,8 @@ def _source_entry(row: sqlite3.Row) -> dict[str, Any]:
         "missing_since": row["missing_since"],
         "metadata": json.loads(row["metadata_json"]),
         "extra": json.loads(row["content_extra_json"]) if row["content_extra_json"] else None,
+        "entry": json.loads(row["entry_json"]) if row["entry_json"] else None,
+        "entry_read_at": row["entry_read_at"],
     }
 
 

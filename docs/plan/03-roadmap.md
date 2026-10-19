@@ -68,7 +68,25 @@ Decided 2026-10-13: each regulator gets its own repository; this one covers OJK 
 - [x] A test shows that a fallback source plugs in beside RegAlert and merges by canonical ID.
 - [x] Checked against the real data: reparse changed 0 texts and 0 IDs, and the re-exported corpus index is byte-identical.
 
-## M2 — BPK source
+## M2b — JDIH OJK as the primary source *(done 2026-10-16)*
+
+RegAlert banned our account, so OJK's own legal database replaced it ahead of M2–M4. Decided 2026-10-16 over BPK: BPK holds ~512 POJK, ~25 SEOJK and no PADK, and publishes POJK a median 120 days late.
+
+- [x] `JdihOjkSource`: discovery from the listing JSON (10 sectors × POJK, SEOJK/PADK; 20 requests), detail-page parser (`sources/jdih/catalog.py`, tested on real pages), file download, text-layer extraction (`pdf_text.py`, pymupdf, paged).
+- [x] `read_entry`, a new optional `Source` capability: the catalogue entry (official dates, standing, history with article references, legal basis, file list) without the files. Pipeline stage `read_entries` (budgeted, never-read first); store schema v3; a changed entry is an event, a changed standing a warning.
+- [x] Identity: Indonesian titles and JDIH's typos (`Nomor34/POJK.05/2015`, `28/POJK,05/2014`); `cited_id` for history targets; all 973 JDIH titles resolve, numbers agree with JDIH's own column.
+- [x] Dedup: a record's names include the subject of its own Indonesian header, so JDIH's titles match RegAlert's English-titled records (885 of 905 shared documents, without downloading anything). A text that isn't the instrument (a page, an annex) can't contradict one that names itself. The subject rule was fixed on the way: 5 circulars' titles carried their first paragraph.
+- [x] Contract v2: dates, status (`jdih_ojk`), files, paged texts with `of_file`, citations from history and legal basis (partial revocations with `pasal-N/ayat-M` addresses); documents keep their first source record, so the platform sees no churn.
+- [x] Standing combines JDIH's status field with the entry's own history (the field says only "Berlaku" for 94 regulations its history lists as amended or partly revoked). "Tidak Berlaku Sejak …" is never an effective date.
+- [x] `reparse` re-parses stored entry pages offline, so parser fixes never need a re-crawl.
+- [x] Live (2026-10-16): 973 discovered; every entry read; 7 sample documents fetched with their official files; loaded into the platform (884 documents with official dates and status).
+- [x] The registry RCA's OJK acquisition failures (Q5.1): 9 of 12 fixed with official PDFs (`fetch --document`); their review items resolved. POJK 21, 34 and 46 of 2024 wait for a second discovery source: JDIH doesn't list them.
+- [x] The rest of the content queue (2026-10-16): 64 regulations RegAlert never had (now in the registry: 1,041 OJK documents) and 13 whose held text was a web page or an annex. 3 stay queued; their held text is the regulation.
+- [x] Identity: JDIH's title and its own number column agreeing make a high-confidence id, so a file naming another regulation is a conflict for a person (JDIH serves POJK 14/2020 as POJK 14/2016's file; SEOJK 16/2016's header reads "116"). Dedup: texts sharing ≥ 97% of their words are one document (different circulars share ≤ 90%).
+- [ ] OCR for pages without a text layer: POJK 16 and 17 of 2014 and SEOJK 2/2013 have a scanned first page (no header), SEOJK 48/2017 one scanned page.
+- [ ] ojk.go.id as a second discovery source, for what JDIH's listing lacks (see [04](04-risks-and-open-questions.md)).
+
+## M2 — BPK source *(superseded for OJK by M2b; BPK stays a possible cross-check)*
 
 - [ ] Discovery through paginated search (`jenis=80`, `jenis=212`), plus sitemaps if M0 shows they're usable.
 - [ ] Detail page parser (metadata, status, links between regulations, abstract) with saved HTML fixtures.

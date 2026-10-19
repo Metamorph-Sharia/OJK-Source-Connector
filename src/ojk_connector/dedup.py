@@ -1,8 +1,10 @@
 """Deduplication: which records are the same document?
 
 Two records are the same document when they share a trusted canonical id (high or
-medium confidence) AND one of: identical instrument text, largely matching titles, or
-both texts' own headers name the instrument. While either text is missing the pair is
+medium confidence) AND one of: identical instrument text, largely matching names, or
+both texts' own headers name the instrument. A record's names are its title and the
+subject its own Indonesian header states ("TENTANG …"), so an official catalogue's
+Indonesian title matches a record whose source titled it in English. While either text is missing the pair is
 *undecided* (both get fetched, no alert). Once both texts exist and still disagree, it
 is an *id collision*: one of the ids is probably wrong (a source error, or a citation
 picked up from the body). Collisions are kept apart and listed for review.
@@ -20,11 +22,16 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from ojk_connector.identity import TRUSTED_CONFIDENCE
+from ojk_connector.identity import PRIMARY_LANGUAGE, TRUSTED_CONFIDENCE, indonesian_subject
 from ojk_connector.models import DiscoveredDocument, Origin
 from ojk_connector.store import Store, doc_key
 
 DEFAULT_TITLE_OVERLAP = 0.8
+NOT_INSTRUMENT = frozenset({"page", "unknown"})  # text assessments that say nothing about which instrument it is
+# Two texts of one document share nearly all their words; different circulars share at most 90% (300 random
+# SEOJK pairs, 2026-10-16). Short texts are left out: a few hundred words of legal boilerplate match anything.
+SAME_BODY_OVERLAP = 0.97
+MIN_BODY_WORDS = 300
 
 # Words that say nothing about which document it is (English titles from sources, Indonesian titles).
 STOPWORDS = frozenset("""
@@ -48,6 +55,44 @@ def title_overlap(a: str | None, b: str | None) -> float:
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / min(len(ta), len(tb))
+
+
+def _names(store: Store, row: sqlite3.Row) -> list[str]:
+    """What a record is called: its title, and the subject its own Indonesian text states."""
+    names = [row["title"] or ""]
+    for text in store.texts_for(row["source"], row["source_id"]):
+        if text.language == PRIMARY_LANGUAGE and text.origin != Origin.SOURCE_TRANSLATION:
+            subject = indonesian_subject(store.blobs.get(text.blob_sha256).decode("utf-8"))
+            names += [subject] if subject else []
+    return names
+
+
+def name_overlap(store: Store, a: sqlite3.Row, b: sqlite3.Row) -> float:
+    """The best title overlap between any name of one record and any name of the other."""
+    return max(title_overlap(x, y) for x in _names(store, a) for y in _names(store, b))
+
+
+def _names_itself_beside_a_non_instrument(store: Store, own: sqlite3.Row, other: sqlite3.Row) -> bool:
+    """``own``'s text names this instrument; ``other`` holds only texts that are not the instrument (a web page,
+    an annex), so they prove nothing, and its id comes from a high-confidence identifier."""
+    assessments = {t.assessment for t in store.texts_for(other["source"], other["source_id"])
+                   if t.origin != Origin.SOURCE_TRANSLATION}
+    return (own["id_origin"] == "text" and other["id_origin"] == "metadata" and other["id_confidence"] == "high"
+            and bool(assessments) and assessments <= NOT_INSTRUMENT)
+
+
+def _words(store: Store, row: sqlite3.Row) -> set[str]:
+    return {word for text in store.texts_for(row["source"], row["source_id"])
+            if text.language == PRIMARY_LANGUAGE and text.origin != Origin.SOURCE_TRANSLATION
+            for word in re.findall(r"[a-z]{4,}", store.blobs.get(text.blob_sha256).decode("utf-8").lower())}
+
+
+def body_overlap(store: Store, a: sqlite3.Row, b: sqlite3.Row) -> float:
+    """Share of the smaller text's distinct words the other text also has; 0 when either text is short."""
+    words_a, words_b = _words(store, a), _words(store, b)
+    if min(len(words_a), len(words_b)) < MIN_BODY_WORDS:
+        return 0.0
+    return len(words_a & words_b) / min(len(words_a), len(words_b))
 
 
 def _key(row: sqlite3.Row) -> str:
@@ -77,11 +122,16 @@ def compare(store: Store, a: sqlite3.Row, b: sqlite3.Row, threshold: float) -> t
     shas_a, shas_b = _instrument_shas(store, a), _instrument_shas(store, b)
     if shas_a & shas_b:
         return "duplicate", "identical text"
-    overlap = title_overlap(a["title"], b["title"])
+    body = body_overlap(store, a, b)
+    if body >= SAME_BODY_OVERLAP:
+        return "duplicate", f"texts share {body:.1%} of their words"
+    overlap = name_overlap(store, a, b)
     if overlap >= threshold:
         return "duplicate", f"title overlap {overlap:.2f}"
     if a["id_origin"] == "text" and b["id_origin"] == "text":
         return "duplicate", "both texts identify themselves as this instrument"
+    if _names_itself_beside_a_non_instrument(store, a, b) or _names_itself_beside_a_non_instrument(store, b, a):
+        return "duplicate", "one text identifies itself; the other is not the instrument, and its identifier agrees"
     if not shas_a or not shas_b:
         return "undecided", f"title overlap {overlap:.2f}; not comparable until both texts are fetched"
     return "collision", f"title overlap {overlap:.2f} and the texts differ"
@@ -98,7 +148,7 @@ def find_fetched_duplicate(store: Store, doc: DiscoveredDocument, threshold: flo
         (row["canonical_id"], doc.source, doc.source_id),
     ).fetchall()
     for other in sorted(others, key=_primary_order):
-        overlap = title_overlap(row["title"], other["title"])
+        overlap = name_overlap(store, row, other)
         if overlap >= threshold:
             return _key(other), f"same document as {_key(other)}: same id, title overlap {overlap:.2f}"
     return None

@@ -90,3 +90,46 @@ def test_undoing_a_duplicate_decision_requeues_the_record(tmp_path) -> None:
     store.set_identity("regalert", "b", IdResolution(CanonicalId.parse("ojk:pojk:2014:25"), "high", "t"), "metadata")
     resolve_duplicates(store)
     assert store.row("regalert", "b")["content_status"] == "pending"
+
+
+def test_a_text_that_is_not_the_instrument_cannot_contradict_one_that_names_itself(tmp_path) -> None:
+    """Seen 2026-10-16: RegAlert held PADK 47/2025 as an annex (identified by its high-confidence identifier);
+    JDIH OJK's official PDF names itself PADK 47/2025."""
+    store = Store(tmp_path)
+    annex = _add(store, "a", "OJK Commissioner Regulation No. 47/PADK.05/2025 on Guarantee Institutions",
+                 "ojk:padk:2025:47")
+    store.save_content(annex, DocumentContent([TextArtifact("id", Origin.SOURCE_TEXT, Rights.PUBLIC, "LAMPIRAN I")], []),
+                       None, {("id", Origin.SOURCE_TEXT): "unknown"})
+    official = _add(store, "b", "Peraturan Anggota Dewan Komisioner Nomor 47/PADK.05/2025", "ojk:padk:2025:47")
+    store.save_content(official, DocumentContent([TextArtifact("id", Origin.SELF_EXTRACTED, Rights.PUBLIC, "PADK")], []),
+                       IdResolution(CanonicalId.parse("ojk:padk:2025:47"), "high", "text_header"),
+                       {("id", Origin.SELF_EXTRACTED): "instrument"})
+
+    outcome = resolve_duplicates(store)
+    assert (outcome.duplicates, outcome.collisions) == (1, 0)
+
+
+def _body(seed: int, words: int = 400) -> str:
+    """Distinct letter-only words: seed 1 and seed 2 share none."""
+    def letters(n: int) -> str:
+        return "".join("abcdefghijklmnopqrstuvwxyz"[int(d)] for d in f"{n:04d}")
+    return " ".join(f"{'kata' if seed == 1 else 'pasal'}{letters(n)}" for n in range(words))
+
+
+def test_texts_with_the_same_words_are_one_document_whatever_their_titles(tmp_path) -> None:
+    """Seen 2026-10-16: SEOJK 2/2013 from RegAlert (English title, annex first) and from JDIH OJK (Indonesian title,
+    scanned first page): neither names itself, yet the bodies share 99.8% of their words."""
+    store = Store(tmp_path)
+    body = _body(1)
+    _add(store, "a", "SEOJK on the Form and Structure of Financial Statements", "ojk:seojk:2013:2", "LAMPIRAN " + body)
+    _add(store, "b", "Surat Edaran Nomor 2/SEOJK.05/2013 tentang Bentuk dan Susunan Laporan", "ojk:seojk:2013:2",
+         body + " Ditetapkan di Jakarta")
+    outcome = resolve_duplicates(store)
+    assert (outcome.duplicates, outcome.collisions) == (1, 0)
+
+
+def test_different_texts_under_one_id_stay_a_collision(tmp_path) -> None:
+    store = Store(tmp_path)
+    _add(store, "a", "Criteria of the Sharia Securities List", "ojk:pojk:2017:35", _body(1))
+    _add(store, "b", "Submission of Information by Issuers", "ojk:pojk:2017:35", _body(2))
+    assert resolve_duplicates(store).collisions == 1

@@ -12,9 +12,11 @@ from ojk_connector.sources.base import (
     SourceError,
     SourceForbidden,
 )
+from ojk_connector.sources.jdih.source import JdihOjkSource
 from ojk_connector.sources.regalert.source import RegAlertSource
 
 SOURCES: dict[str, type[Source]] = {
+    "jdih_ojk": JdihOjkSource,
     "regalert": RegAlertSource,
 }
 
