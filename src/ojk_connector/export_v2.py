@@ -11,7 +11,15 @@ from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
 
-from metamorph_contract import BundleWriter, NormalizedDocument, Rights, TextOrigin, is_unresolved
+from metamorph_contract import (
+    BundleWriter,
+    Extraction,
+    ExtractionMethod,
+    NormalizedDocument,
+    Rights,
+    TextOrigin,
+    is_unresolved,
+)
 
 from ojk_connector.contract_v2 import CONNECTOR, HeldDocument, HeldEntry, HeldFile, HeldText, normalized_document
 from ojk_connector.export import SelectedDocument, choose_texts, select_documents
@@ -88,14 +96,17 @@ def _held_text(store: Store, text: TextRow, files: list[tuple[HeldFile, str]]) -
     """A text we extracted ourselves is paged, and comes from its record's main file."""
     record = doc_key(text.source, text.source_id)
     extracted = text.origin == Origin.SELF_EXTRACTED
-    main = next((file.sha256 for file, owner in files if owner == record and file.role == "main"), None)
+    main = next((file for file, owner in files if owner == record and file.role == "main"), None)
+    read = main if extracted and main else None
     return HeldText(
         language=text.language,
         origin=TextOrigin(text.origin.value),
         rights=Rights(text.rights.value),
         content=store.blobs.get(text.blob_sha256).decode("utf-8"),
         paged=extracted,
-        of_file=main if extracted else None,
+        of_file=main.sha256 if extracted and main else None,
+        method=read.method if read else None,
+        extraction=read.extraction if read else None,
     )
 
 
@@ -108,7 +119,10 @@ def _held_files(store: Store, members: list) -> list[tuple[HeldFile, str]]:
         for kind, sha, media_type in store.content_files(member["source"], member["source_id"], FILE_KIND):
             about = described.get(kind, {})
             _, role, name = kind.split(":", 2)
-            held.setdefault(sha, (HeldFile(sha, role, media_type, about.get("url"), name, about.get("pages")),
+            method, extraction = about.get("method"), about.get("extraction")
+            held.setdefault(sha, (HeldFile(sha, role, media_type, about.get("url"), name, about.get("pages"),
+                                           ExtractionMethod(method) if method else None,
+                                           Extraction(**extraction) if extraction else None),
                                   doc_key(member["source"], member["source_id"])))
     return list(held.values())
 

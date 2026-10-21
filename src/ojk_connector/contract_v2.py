@@ -17,6 +17,7 @@ from metamorph_contract import (
     Confidence,
     Dates,
     DocumentInfo,
+    Extraction,
     ExtractionMethod,
     FileRef,
     FileRole,
@@ -89,6 +90,8 @@ class HeldText:
     content: str
     paged: bool = False  # pages marked with <!-- page N -->
     of_file: str | None = None  # sha256 of the file it was extracted from
+    method: ExtractionMethod | None = None  # None: as its origin says (the source's own, or the text layer)
+    extraction: Extraction | None = None  # how MinerU read it (contract 2.1)
 
     @property
     def sha256(self) -> str:
@@ -105,6 +108,8 @@ class HeldFile:
     source_url: str | None
     name: str
     pages: int | None = None
+    method: ExtractionMethod | None = None  # how its text was read, when MinerU read it
+    extraction: Extraction | None = None
 
 
 @dataclass(frozen=True)
@@ -236,11 +241,17 @@ def _text_ref(text: HeldText) -> TextRef:
         sha256=text.sha256,
         language=text.language,
         origin=text.origin,
-        method=ExtractionMethod.SOURCE if text.origin in SOURCE_METHODS else ExtractionMethod.TEXT_LAYER,
+        method=text.method or _method_of(text.origin),
         rights=text.rights,
         paged=text.paged,  # RegAlert's texts have no page boundaries; texts from official PDFs do
         of_file=text.of_file,
+        extraction=text.extraction,
     )
+
+
+def _method_of(origin: TextOrigin) -> ExtractionMethod:
+    """A text's method when nothing else says: the source's own, or the text layer of a PDF read here."""
+    return ExtractionMethod.SOURCE if origin in SOURCE_METHODS else ExtractionMethod.TEXT_LAYER
 
 
 def _file_ref(file: HeldFile) -> FileRef:

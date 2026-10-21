@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import httpx
+import pymupdf
 import pytest
 from fake_jdih import FakeJdih, Regulation, pdf
 
@@ -92,6 +93,27 @@ def test_a_scanned_page_makes_the_text_incomplete(tmp_path) -> None:
     assert text.complete is False
 
 
+def set_apart() -> bytes:
+    """A justified line set a word at a time, as many official PDFs are."""
+    document = pymupdf.open()
+    page = document.new_page()
+    for n, word in enumerate(["Peraturan", "ini", "mulai", "berlaku", "pada"]):
+        page.insert_text((72 + 80 * n, 72), word)
+    return document.tobytes()
+
+
+def test_the_text_is_a_printed_line_to_a_line_unless_pymupdfs_own_lines_are_asked_for(tmp_path, monkeypatch) -> None:
+    site = FakeJdih([regulation(files=[("Peraturan", "2026pojk008.pdf", set_apart())])])
+    with source(site, tmp_path) as s:
+        [printed] = s.fetch_content(next(s.discover())).texts
+    monkeypatch.setenv("METAMORPH_PDF_LINES", "extracted")
+    with source(site, tmp_path) as s:
+        [extracted] = s.fetch_content(next(s.discover())).texts
+
+    assert printed.content == "<!-- page 1 -->\nPeraturan ini mulai berlaku pada"
+    assert extracted.content == "<!-- page 1 -->\nPeraturan\nini\nmulai\nberlaku\npada"
+
+
 def test_content_is_rebuilt_from_stored_snapshots_without_network(site, tmp_path) -> None:
     with source(site, tmp_path) as s:
         document = next(s.discover())
@@ -135,3 +157,41 @@ def test_a_broken_secondary_file_is_recorded_but_a_broken_main_file_fails_the_re
     site = Broken([regulation(files=[("Abstrak", "a.pdf", b""), ("Peraturan", "x.pdf", b"")])])  # main is #1 now
     with source(site, tmp_path) as s, pytest.raises(SourceError):
         s.fetch_content(next(s.discover()))
+
+
+class FakeMinerU:
+    """ExtractPdf as the source needs it: what MinerU read of the regulation's PDF."""
+
+    def __init__(self) -> None:
+        from metamorph_pdf_text import ExtractedPdf, Extraction, OcrMode, Tier
+
+        read = Extraction("mineru", "4.0.12+t1", Tier.STANDARD, OcrMode.TXT, 0, 1)
+        pages = (HEADER, "Pasal 1\nDalam Peraturan ini yang dimaksud dengan ...")
+        self.read = ExtractedPdf(pages, "text_layer", read, ())
+
+    def run(self, pdf: bytes, role: str):
+        return self.read
+
+
+def test_with_the_mineru_engine_the_text_is_minerus_and_how_it_was_read_is_kept(site, tmp_path, monkeypatch) -> None:
+    import ojk_connector.sources.jdih.source as jdih
+
+    monkeypatch.setenv("METAMORPH_PDF_ENGINE", "mineru")
+    monkeypatch.setattr(jdih, "from_environment", lambda environment: FakeMinerU())
+    with source(site, tmp_path) as s:
+        content = s.fetch_content(next(s.discover()))
+
+    [text] = content.texts
+    assert text.content.startswith("<!-- page 1 -->\nPERATURAN OTORITAS JASA KEUANGAN")
+    main = next(file for file in content.extra["files"] if file["role"] == "main")
+    assert (main["method"], main["extraction"]["engine"], main["extraction"]["pages_fallen_back"]) == (
+        "text_layer", "mineru", 1,
+    )
+
+
+def test_with_the_default_engine_the_files_description_is_as_before(site, tmp_path) -> None:
+    with source(site, tmp_path) as s:
+        content = s.fetch_content(next(s.discover()))
+
+    main = next(file for file in content.extra["files"] if file["role"] == "main")
+    assert "extraction" not in main and "method" not in main

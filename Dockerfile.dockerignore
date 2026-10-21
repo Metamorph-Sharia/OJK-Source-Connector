@@ -1,6 +1,7 @@
 # Only what OJK-Source-Connector/Dockerfile copies: the build context is the whole workspace, data included.
 *
 !Metamorph-Knowledge-Platform/packages/metamorph-contract
+!Metamorph-Knowledge-Platform/packages/metamorph-pdf-text
 !OJK-Source-Connector/pyproject.toml
 !OJK-Source-Connector/uv.lock
 !OJK-Source-Connector/README.md

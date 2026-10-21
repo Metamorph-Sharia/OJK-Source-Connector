@@ -192,3 +192,23 @@ def test_a_document_held_only_as_official_files_is_valid() -> None:
     document = normalize(held(texts=(), files=(pdf,), entry=entry_of()))
     assert problems(document) == []
     assert document.document.title == "Perizinan Usaha"  # from the official title, as no text is held
+
+
+def test_a_text_mineru_read_carries_its_method_and_how_it_was_read() -> None:
+    from metamorph_contract import Extraction, ExtractionMethod
+
+    read = Extraction("mineru", "4.0.12+t1", "standard", "ocr", 3, 0)
+    text = HeldText("id", TextOrigin.SELF_EXTRACTED, Rights.PUBLIC, "<!-- page 1 -->\n" + HEADER, paged=True,
+                    method=ExtractionMethod.OCR, extraction=read)
+
+    [ref] = normalize(held(texts=(text,))).texts
+
+    assert (ref.method, ref.extraction) == (ExtractionMethod.OCR, read)
+
+
+def test_a_text_read_here_is_from_the_text_layer_with_no_extraction() -> None:
+    text = HeldText("id", TextOrigin.SELF_EXTRACTED, Rights.PUBLIC, "<!-- page 1 -->\n" + HEADER, paged=True)
+
+    [ref] = normalize(held(texts=(text,))).texts
+
+    assert (ref.method, ref.extraction) == ("text_layer", None)

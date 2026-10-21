@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import os
 import time
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
+from metamorph_contract import wants_printed_lines
+from metamorph_pdf_text import from_environment, wants_mineru
 
 from ojk_connector.identity import PRIMARY_LANGUAGE
 from ojk_connector.models import (
@@ -31,7 +35,7 @@ from ojk_connector.models import (
     Snapshot,
     TextArtifact,
 )
-from ojk_connector.pdf_text import NotAPdf, extract_text, is_pdf
+from ojk_connector.pdf_text import NotAPdf, PdfText, extract_text, extract_text_with, is_pdf
 from ojk_connector.sources.base import Source, SourceContext, SourceError, SourceForbidden
 from ojk_connector.sources.jdih.catalog import (
     DOCUMENT_TYPES,
@@ -74,6 +78,8 @@ class JdihOjkSource(Source):
         today: Callable[[], date] = _today,
     ) -> None:
         super().__init__(settings, context)
+        self._printed_lines = wants_printed_lines(os.environ)  # METAMORPH_PDF_LINES=extracted: pymupdf's own lines
+        self._mineru = from_environment(os.environ) if wants_mineru(os.environ) else None  # METAMORPH_PDF_ENGINE
         self._client = JdihClient(
             user_agent=context.user_agent,
             requests_per_second=float(settings.get("requests_per_second", 1.0)),
@@ -174,12 +180,14 @@ class JdihOjkSource(Source):
                                     "media_type": _media_type(link, data)}
             if link.role == "main" and is_pdf(data) and not texts:
                 try:
-                    extracted = extract_text(data)
+                    extracted = self._extracted(data)
                 except NotAPdf as e:
                     item["error"] = str(e)
                 else:
                     item |= {"pages": extracted.pages, "pages_without_text": extracted.pages_without_text,
                              "text": True}
+                    if extracted.extraction:  # read by MinerU: kept with the file's description, for the export
+                        item |= {"method": str(extracted.method), "extraction": asdict(extracted.extraction)}
                     texts.append(TextArtifact(PRIMARY_LANGUAGE, Origin.SELF_EXTRACTED, Rights.PUBLIC,
                                               extracted.text, extracted.complete))
             described.append(item)
@@ -187,6 +195,12 @@ class JdihOjkSource(Source):
             log.warning("JDIH OJK %s: no main PDF with text among %s files", entry.title, len(files))
         return DocumentContent(texts=texts, snapshots=snapshots,
                                extra={"entry": entry.facts(), "files": described, "paged": True})
+
+
+    def _extracted(self, data: bytes) -> PdfText:
+        if self._mineru is not None:
+            return extract_text_with(data, self._mineru)
+        return extract_text(data, printed_lines=self._printed_lines)
 
 
 def _media_type(link: FileLink, data: bytes) -> str:
