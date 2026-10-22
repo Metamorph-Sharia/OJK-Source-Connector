@@ -8,6 +8,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "httpx>=0.27",
     "metamorph-contract",
+    "metamorph-pdf-text",  # METAMORPH_PDF_ENGINE=mineru: MinerU, checked against the text layer
     "pymupdf>=1.24",
 ]
 
@@ -29,3 +30,4 @@ testpaths = ["tests"]
 
 [tool.uv.sources]
 metamorph-contract = { path = "../Metamorph-Knowledge-Platform/packages/metamorph-contract", editable = true }
+metamorph-pdf-text = { path = "../Metamorph-Knowledge-Platform/packages/metamorph-pdf-text", editable = true }

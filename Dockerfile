@@ -15,6 +15,7 @@ RUN useradd --create-home --uid 1000 connector && mkdir /bundles && chown connec
 
 WORKDIR /workspace/OJK-Source-Connector
 COPY Metamorph-Knowledge-Platform/packages/metamorph-contract /workspace/Metamorph-Knowledge-Platform/packages/metamorph-contract
+COPY Metamorph-Knowledge-Platform/packages/metamorph-pdf-text /workspace/Metamorph-Knowledge-Platform/packages/metamorph-pdf-text
 COPY OJK-Source-Connector/pyproject.toml ./pyproject.toml
 COPY OJK-Source-Connector/uv.lock ./uv.lock
 COPY OJK-Source-Connector/README.md ./README.md
