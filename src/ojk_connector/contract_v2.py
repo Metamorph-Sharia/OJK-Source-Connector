@@ -178,7 +178,8 @@ def _document_info(held: HeldDocument) -> DocumentInfo:
     if held.canonical_id is None:
         return _unresolved_info(held, subject or held.title.strip() or held.identifier or held.source_id)
     cid = CanonicalId.parse(held.canonical_id)
-    numbering = old_style_number(held.identifier or "") or old_style_number(primary_text[:_HEADER_WINDOW])
+    numbering = (old_style_number(held.identifier or "", cid.number, cid.year)
+                 or old_style_number(primary_text[:_HEADER_WINDOW], cid.number, cid.year))
     family = cid.family.upper()
     citation = f"{family} {numbering}" if numbering else f"{family} {cid.number} Tahun {cid.year}"
     title = subject or held.title.strip() or citation  # the regulation's own words first
@@ -332,10 +333,17 @@ def _citations(lineage: Mapping[str, Any], target_of: Callable[[str], str | None
     return citations
 
 
-def old_style_number(text: str) -> str | None:
-    """'5/POJK.05/2014' from an identifier or header, spaces removed; None for new-style numbering."""
-    found = _OLD_STYLE_NUMBER.search(text)
-    return re.sub(r"\s+", "", found["number"]) if found else None
+def old_style_number(text: str, number: int | str | None = None, year: int | str | None = None) -> str | None:
+    """'5/POJK.05/2014' from an identifier or header, spaces removed; None for new-style numbering.
+
+    Given the document's own number and year, only a number with both: a header also names the regulations it
+    amends, revokes or rests on, in the same style."""
+    for found in _OLD_STYLE_NUMBER.finditer(text):
+        compact = re.sub(r"\s+", "", found["number"])
+        own_number, own_year = compact.split("/")[0], compact.split("/")[-1]
+        if number is None or (int(own_number), int(own_year)) == (int(number), int(year)):
+            return compact
+    return None
 
 
 def national_law_id(title: str) -> str | None:

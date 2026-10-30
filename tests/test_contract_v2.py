@@ -212,3 +212,21 @@ def test_a_text_read_here_is_from_the_text_layer_with_no_extraction() -> None:
     [ref] = normalize(held(texts=(text,))).texts
 
     assert (ref.method, ref.extraction) == ("text_layer", None)
+
+
+def test_a_header_naming_the_regulation_it_amends_doesnt_give_its_number() -> None:
+    amendment = ("PERATURAN OTORITAS JASA KEUANGAN\nNOMOR 36 TAHUN 2024\nTENTANG\nPERUBAHAN ATAS PERATURAN OTORITAS JASA "
+                 "KEUANGAN NOMOR 69/POJK.05/2016 TENTANG PENYELENGGARAAN USAHA PERUSAHAAN ASURANSI\nDalam rangka ...")
+    document = normalize(held(canonical_id="ojk:pojk:2024:36", identifier=None,
+                              texts=(HeldText("id", TextOrigin.SOURCE_TEXT, Rights.PUBLIC, amendment),))).document
+
+    assert document.citation == "POJK 36 Tahun 2024"
+    assert not any("69/POJK.05/2016" in alias for alias in document.aliases)
+
+
+def test_an_old_style_number_is_the_documents_own_when_it_has_its_number_and_year() -> None:
+    letter = "SEOJK ... berdasarkan POJK Nomor 66/POJK.03/2016 ...\nNOMOR 1/SEOJK.03/2017\nTENTANG ..."
+    document = normalize(held(canonical_id="ojk:seojk:2017:1", identifier=None,
+                              texts=(HeldText("id", TextOrigin.SOURCE_TEXT, Rights.PUBLIC, letter),))).document
+
+    assert document.citation == "SEOJK 1/SEOJK.03/2017"
